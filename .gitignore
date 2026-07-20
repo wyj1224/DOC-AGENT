@@ -1,0 +1,55 @@
+# macOS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local secrets and environment overrides
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# Python caches and local environments
+__pycache__/
+.pycache/
+*.py[cod]
+*.so
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Node / pnpm dependencies and generated frontend files
+node_modules/
+.pnpm-store/
+.npm/
+.vite/
+frontend/dist/
+
+# Runtime logs
+*.log
+
+# Local application data, uploaded documents and generated copies
+backend/data/uploads/
+backend/data/edits/
+backend/data/clause_extractions/
+backend/data/milvus.db/
+backend/data/*_preview.jsonl
+backend/data/*.db
+backend/data/*.sqlite
+backend/data/*.sqlite3
+
+# Local business documents and generated deliverables
+*.doc
+*.docx
+*.pdf
+*.xls
+*.xlsx
+output/
+
+# Rendered pages and other temporary verification files
+tmp/
