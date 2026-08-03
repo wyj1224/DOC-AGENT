@@ -2,10 +2,9 @@ from pathlib import Path
 import shutil
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from app.agent.tools import knowledge_query_tool
-from app.auth import get_current_user
 from app.config import BACKEND_ROOT
 from app.db.database import SessionLocal
 from app.db.models import KnowledgeDocument
@@ -13,11 +12,7 @@ from app.knowledge_store import KnowledgeMilvusStore
 from app.services.knowledge_base import ingest_knowledge_document, knowledge_document_item
 
 
-router = APIRouter(
-    prefix="/knowledge",
-    tags=["知识库"],
-    dependencies=[Depends(get_current_user)],
-)
+router = APIRouter(prefix="/knowledge", tags=["知识库"])
 UPLOAD_ROOT = BACKEND_ROOT / "data" / "uploads"
 
 

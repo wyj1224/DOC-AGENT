@@ -18,6 +18,7 @@ class PdfVisionTest(unittest.TestCase):
         result = normalize_visual_page(
             {
                 "announcement_clause_nos": "第 1.0.6、2.0.10 条",
+                "announcement_clause_refs": ["5.1.9#7", "5.1.9第8款"],
                 "bold_clause_nos": ["3．3．5", "不是条号"],
                 "has_bold_rule": True,
                 "confidence": 1.4,
@@ -26,6 +27,7 @@ class PdfVisionTest(unittest.TestCase):
         )
 
         self.assertEqual(result["announcement_clause_nos"], ["1.0.6", "2.0.10"])
+        self.assertEqual(result["announcement_clause_refs"], ["5.1.9#7", "5.1.9#8"])
         self.assertEqual(result["bold_clause_nos"], ["3.3.5"])
         self.assertTrue(result["has_bold_rule"])
         self.assertEqual(result["confidence"], 1.0)

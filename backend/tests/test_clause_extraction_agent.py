@@ -1,7 +1,10 @@
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+import fitz
 
 from app.agent.workflow import (
     allowed_clause_extraction_actions,
@@ -12,6 +15,7 @@ from app.services.clause_extraction import (
     continuation_pages_to_refine,
     detect_clause_signals,
     extract_candidates_from_pages,
+    extract_native_pdf_pages,
     inspect_pdf_visual_evidence,
     merge_visual_signals,
     parsed_pages_are_usable,
@@ -35,6 +39,63 @@ def extraction_state(status: str, *, requires_review: bool = False) -> dict[str,
 
 
 class ClauseExtractionAgentLoopTest(unittest.TestCase):
+    def test_native_pdf_text_layer_is_read_and_page_slots_are_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "native-text.pdf"
+            document = fitz.open()
+            page = document.new_page()
+            page.insert_text((72, 72), "4.2.2 Equipment installation must comply.")
+            document.save(path)
+            document.close()
+
+            pages = extract_native_pdf_pages(path, 2)
+
+        self.assertIn("4.2.2", pages[0])
+        self.assertEqual(pages[1], "")
+
+    def test_native_ocr_split_next_clause_does_not_pollute_bold_clause(self):
+        pages = [
+            "4.2.3 防雷接地系统必须符合相关规范。\n"
+            "4. \n2. 4 普通条文。\n"
+            "4.7.4 电源线严禁中间驳接。\n"
+            "4. \n7. \n5 另一条普通条文。"
+        ]
+
+        clauses = extract_candidates_from_pages(
+            pages, listed_clause_nos=["4.2.3", "4.7.4"]
+        )
+
+        self.assertEqual([item["clause_no"] for item in clauses], ["4.2.3", "4.7.4"])
+        self.assertEqual(clauses[0]["clause_text"], "防雷接地系统必须符合相关规范。")
+        self.assertEqual(clauses[1]["clause_text"], "电源线严禁中间驳接。")
+
+    def test_announcement_subitems_are_expanded_and_extracted_individually(self):
+        pages = [
+            "本规定以黑体字标注的5.1.9条第7,8,9款、"
+            "5.1.10条第3,4款为强制性条文，必须严格执行。",
+            "5.\n1.\n9 检查以下内容：\n"
+            "7. 接地排严禁连接到铁塔塔脚。\n"
+            "8. 金属构件必须接地。\n"
+            "9. 配电设备严禁作接零保护。\n"
+            "5.1.\n10 检查以下内容：\n"
+            "3. 接地线端必须可靠连接。\n"
+            "4. 接地线中严禁加装开关。",
+        ]
+
+        inspection = detect_clause_signals(pages, "测试规范.pdf")
+        clauses = extract_candidates_from_pages(
+            pages,
+            listed_clause_nos=list(inspection["listed_clause_nos"]),
+            listed_clause_refs=list(inspection["listed_clause_refs"]),
+        )
+
+        self.assertEqual(len(inspection["listed_clause_refs"]), 5)
+        self.assertEqual(
+            [item["reference"] for item in clauses],
+            ["5.1.9 第7款", "5.1.9 第8款", "5.1.9 第9款", "5.1.10 第3款", "5.1.10 第4款"],
+        )
+        self.assertEqual(clauses[2]["clause_text"], "配电设备严禁作接零保护。")
+
     @patch("app.agent.workflow.fail_clause_extraction_run")
     @patch("app.agent.workflow.finalize_clause_extraction_run")
     @patch("app.agent.workflow.append_clause_extraction_trace")

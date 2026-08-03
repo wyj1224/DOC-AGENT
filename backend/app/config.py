@@ -26,8 +26,9 @@ class Settings:
     knowledge_milvus_collection: str
     database_url: str
     llama_cloud_api_key: str
-    jwt_secret: str
-    jwt_expire_minutes: int
+    visitor_cookie_secret: str
+    visitor_cookie_days: int
+    visitor_cookie_secure: bool
 
 
 def get_settings() -> Settings:
@@ -57,8 +58,10 @@ def get_settings() -> Settings:
             "postgresql+psycopg://clause_agent:clause_agent@localhost:5432/clause_agent",
         ),
         llama_cloud_api_key=os.getenv("LLAMA_CLOUD_API_KEY", ""),
-        jwt_secret=os.getenv("JWT_SECRET", ""),
-        jwt_expire_minutes=int(os.getenv("JWT_EXPIRE_MINUTES", "10080")),
+        visitor_cookie_secret=os.getenv("VISITOR_COOKIE_SECRET", "change-me-before-running"),
+        visitor_cookie_days=int(os.getenv("VISITOR_COOKIE_DAYS", "90")),
+        visitor_cookie_secure=os.getenv("VISITOR_COOKIE_SECURE", "false").lower()
+        in {"1", "true", "yes"},
     )
 
 

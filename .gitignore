@@ -28,7 +28,8 @@ node_modules/
 .pnpm-store/
 .npm/
 .vite/
-frontend/dist/
+frontend-vue2/dist/
+frontend-admin-vue2/dist/
 
 # Runtime logs
 *.log

@@ -44,7 +44,7 @@ def parse_word_tool(
         if edit_run_id is not None:
             edit_run = session.get(WordEditRun, edit_run_id)
             if not edit_run or edit_run.owner_user_id != owner_user_id:
-                raise ValueError("Word 修订任务不存在或不属于当前用户")
+                raise ValueError("Word 修订任务不存在或不属于当前访客")
             if not any(int(item.get("cycle") or 1) == edit_cycle for item in list(edit_run.changes or [])):
                 raise ValueError("Word 修订任务中不存在指定 cycle")
             document = (
@@ -57,7 +57,7 @@ def parse_word_tool(
                 .first()
             )
             if document and document.owner_user_id != owner_user_id:
-                raise ValueError("修订副本不属于当前用户")
+                raise ValueError("修订副本不属于当前访客")
             if document and document.parse_status == "parsed":
                 return current_parse_result(session, document)
 
@@ -132,8 +132,15 @@ def parse_word_tool(
         return result
 
 
-def word_check_tool(document_id: int, replace: bool = True, issue_limit: int = 50, publish_date: date | None = None) -> dict[str, object]:
+def word_check_tool(
+    document_id: int,
+    replace: bool = True,
+    issue_limit: int = 50,
+    publish_date: date | None = None,
+    owner_user_id: int | None = None,
+) -> dict[str, object]:
     with SessionLocal() as session:
+        require_owned_document(session, document_id, owner_user_id)
         return check_word_document(
             session,
             document_id=document_id,
@@ -149,8 +156,10 @@ def completeness_check_tool(
     template_id: int | None = None,
     replace: bool = True,
     issue_limit: int = 50,
+    owner_user_id: int | None = None,
 ) -> dict[str, object]:
     with SessionLocal() as session:
+        require_owned_document(session, document_id, owner_user_id)
         return check_body_completeness(
             session,
             document_id=document_id,
@@ -166,8 +175,10 @@ def get_issues_tool(
     issue_type: str = "",
     severity: str = "",
     issue_limit: int = 50,
+    owner_user_id: int | None = None,
 ) -> dict[str, object]:
     with SessionLocal() as session:
+        require_owned_document(session, document_id, owner_user_id)
         query = session.query(CheckIssue).filter(CheckIssue.document_id == document_id)
         if check_scope:
             query = query.filter(CheckIssue.check_scope == check_scope)
@@ -199,8 +210,15 @@ def get_document_parse_result(
         if not document:
             raise ValueError("Word 文档不存在")
         if owner_user_id is not None and document.owner_user_id != owner_user_id:
-            raise ValueError("Word 文档不存在或不属于当前用户")
+            raise ValueError("Word 文档不存在或不属于当前访客")
         return current_parse_result(session, document)
+
+
+def require_owned_document(session, document_id: int, owner_user_id: int | None) -> WordDocument:
+    document = session.get(WordDocument, document_id)
+    if not document or (owner_user_id is not None and document.owner_user_id != owner_user_id):
+        raise ValueError("Word 文档不存在或不属于当前访客")
+    return document
 
 
 def current_parse_result(session, document: WordDocument) -> dict[str, object]:

@@ -1,6 +1,6 @@
 # DOC AGENT
 
-面向通信工程设计说明的文档问答与校验智能体。项目当前已经打通用户登录、会话记忆、Word 一致性校验、Word 完整性校验、通用知识库 RAG、Agent 工具调用和前端交互等主要链路。
+面向通信工程设计说明的文档问答与校验智能体。项目当前已经打通匿名访客会话记忆、Word 一致性校验、Word 完整性校验、通用知识库 RAG、Agent 工具调用、公共工作台和独立资料管理页等主要链路。
 
 当前已经打通“检查 -> Agent 读取结构化问题 -> 规划并修改 Word 副本 -> 重新解析与复检 -> Agent 判断继续或结束 -> 返回副本”的文档修改闭环。下一阶段的核心目标是建立正式的 RAG 评测集，并根据真实使用反馈继续补充回归样例。
 
@@ -37,7 +37,7 @@
 
 - 大模型先规划工具，再由工具注册表执行确定性工具，最后生成回答。
 - 支持 Word 解析、一致性检查、完整性检查、问题查询和知识库问答工具。
-- 用户通过 JWT 登录；不同用户的会话和 Agent 运行记录相互隔离。
+- 浏览器首次访问时自动获得签名 `visitor_id` Cookie；无需登录，不同浏览器的会话、文档和 Agent 运行记录仍相互隔离。
 - 同一会话保存用户问题和最终回答，并将会话上下文提供给后续请求。
 - 每累计 12 条未总结消息触发一次摘要，保留最近 6 条原始消息。
 - 工具计划、工具结果和耗时保存在检查运行记录中，不混入日常对话记忆。
@@ -48,19 +48,20 @@
 
 ### 5. 前端工作台
 
-- React + TypeScript + Vite。
-- 登录与注册页面。
+- 公共工作台使用 Vue 2.7 + Vite，位于 `frontend-vue2/`，打开即可使用。
+- 独立资料管理页位于 `frontend-admin-vue2/`，只包含知识库、Word 模板和 Excel 标准库。
+- 旧 React 前端以及登录、注册和账户入口已移除。
 - 左侧会话列表、新建对话和删除对话。
 - 中间聊天式工作区，支持文字、Word 附件和流式回答。
 - 右侧可展开结果面板，展示问题、引用来源和 Agent 执行信息。
 - 自动修订完成后展示副本名称、修改数量、复检结果、LLM 决策次数、工具调用次数、执行循环和下载按钮。
-- 设置与资料库面板支持知识库、Word 模板、Excel 标准库和账户操作。
+- 公共工作台不展示资料维护入口；管理网址单独提供知识库、Word 模板和 Excel 标准库操作。
 
 ## 系统结构
 
 ```text
 浏览器
-  -> React 前端
+  -> Vue 2 公共工作台（5174）/ Vue 2 资料管理页（5175）
   -> FastAPI 接口
      -> Agent 工作流与会话记忆
      -> Word 一致性/完整性服务
@@ -76,7 +77,7 @@
 
 | 层级 | 技术 |
 | --- | --- |
-| 前端 | React 19、TypeScript、Vite、Lucide Icons |
+| 前端 | Vue 2.7、Vite、Lucide Icons |
 | API | FastAPI、Uvicorn |
 | ORM/数据库 | SQLAlchemy 2、PostgreSQL 16 |
 | Word/Excel | python-docx、本地 Excel 解析 |
@@ -85,7 +86,7 @@
 | Embedding | 千问 Embedding OpenAI Compatible API |
 | 向量库 | Milvus Lite |
 | Agent LLM | DeepSeek OpenAI Compatible API |
-| 认证 | Argon2、JWT |
+| 访客隔离 | HMAC 签名 HttpOnly Cookie、匿名访客记录 |
 
 ## 目录概览
 
@@ -94,7 +95,8 @@
 ├── README.md                 # 项目入口、功能和启动说明
 ├── agent.md                  # 详细代码地图、功能状态和后续目标
 ├── backend/                  # FastAPI、数据库、Agent、校验和 RAG
-├── frontend/                 # React 用户界面
+├── frontend-vue2/            # Vue 2.7 公共文档工作台
+├── frontend-admin-vue2/      # Vue 2.7 资料管理页
 ├── scripts/                  # 阶段报告等独立脚本
 ├── output/                   # 已生成的报告
 ├── 强制性条文整理20260507.xlsx # 当前标准有效性与强条数据源
@@ -106,7 +108,7 @@
 ### 1. 前置条件
 
 - Python 3.11
-- Node.js 与 pnpm
+- Node.js 与 npm
 - Docker Desktop
 - DeepSeek API Key
 - 千问/阿里百炼 API Key
@@ -119,7 +121,7 @@ cd backend
 cp .env.example .env
 ```
 
-在 `.env` 中配置 API Key 和 `JWT_SECRET`，然后执行：
+在 `.env` 中配置 API Key 和 `VISITOR_COOKIE_SECRET`，然后执行：
 
 ```bash
 python -m pip install -r requirements.txt
@@ -132,33 +134,42 @@ python -m uvicorn app.main:app --reload
 
 接口文档：`http://127.0.0.1:8000/docs`
 
-### 3. 启动前端
+### 3. 启动公共工作台
 
 另开一个终端：
 
 ```bash
-cd frontend
-pnpm install
-pnpm dev
+cd frontend-vue2
+npm install
+npm run dev
 ```
 
-前端地址：`http://127.0.0.1:5173`
+公共工作台地址：`http://127.0.0.1:5174`
 
 前端默认请求 `http://127.0.0.1:8000`。如后端地址不同，可设置：
 
 ```bash
-VITE_API_BASE=https://你的后端地址 pnpm dev
+VITE_API_BASE=https://你的后端地址 npm run dev
 ```
 
-### 4. 首次使用
+### 4. 启动资料管理页
 
-1. 打开前端并注册用户。
-2. 在“设置与资料库”中上传 Excel 标准库。
-3. 上传三个 Word 模板，系统从文件名自动识别年份和类型。
-4. 按需上传知识库文件并等待解析入库。
-5. 新建对话，上传待检 Word 后输入“全面检查这个文档”。
-6. 检查后继续输入“帮我修改”，系统会生成修订副本并自动复检。
-7. 也可以切换到知识问答模式直接查询知识库。
+```bash
+cd frontend-admin-vue2
+npm install
+npm run dev
+```
+
+资料管理页地址：`http://127.0.0.1:5175`。两个前端连接同一套后端和数据库；当前按网址入口隔离，不提供登录权限控制。
+
+### 5. 首次使用
+
+1. 维护人员打开 5175，上传 Excel 标准库、三个 Word 模板和知识库资料。
+2. 普通使用者打开 5174，浏览器会自动建立匿名访客身份。
+3. 新建对话，上传待检 Word 后输入“全面检查这个文档”。
+4. 检查后继续输入“帮我修改”，系统会生成修订副本并自动复检。
+5. 也可以切换到强条抽取或知识问答模式。
+6. 刷新或重新打开同一浏览器时，会通过访客 Cookie 恢复历史会话。
 
 ## 可选命令
 
@@ -187,11 +198,13 @@ python -m app.cli.eval_rag data/rag_eval/questions.example.jsonl --top-k 5
 
 ## 当前边界
 
-- 会话和 Agent 运行记录已按用户隔离；知识库、模板和 Excel 标准库当前作为登录用户共享的公共资料库使用。
-- Word 上传记录带有用户标识，但部分直接资源接口仍需继续补齐严格的所有权校验。
+- 会话、上传文档、检查和 Agent 运行记录按匿名访客隔离；知识库、模板和 Excel 标准库是全局共享资料。
+- 清除 Cookie、使用另一浏览器或更换设备后会获得新的访客身份，无法恢复原浏览器的会话。
+- 资料管理页当前只通过独立网址隐藏入口，不提供应用层权限控制。
 - 自动修订仅处理一致性检查的 `warning` 和 `high`，不修改 `info`，也不修改完整性提醒。
 - 自动修订依赖新解析文档保存的精确位置；旧数据需重新上传并检查后才能写回。
 - 当前已有 RAG 冒烟评测脚本，尚未建立覆盖真实业务问题的正式评测集。
+- Vue 2 已停止官方维护；当前版本是满足既定技术要求的 Vue 2.7.16，依赖安全告警需要在部署前单独评估。
 
 ## 后续目标
 

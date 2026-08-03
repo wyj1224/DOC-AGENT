@@ -1,20 +1,15 @@
 from pathlib import Path
 import shutil
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, File, Form, UploadFile
 
-from app.auth import get_current_user
 from app.config import BACKEND_ROOT
 from app.db.database import SessionLocal
 from app.db.models import MandatoryClause, StandardValidityRecord
 from app.services.excel_ingest import ingest_excel_to_postgres
 
 
-router = APIRouter(
-    prefix="/excel",
-    tags=["Excel 标准库"],
-    dependencies=[Depends(get_current_user)],
-)
+router = APIRouter(prefix="/excel", tags=["Excel 标准库"])
 UPLOAD_ROOT = BACKEND_ROOT / "data" / "uploads"
 
 

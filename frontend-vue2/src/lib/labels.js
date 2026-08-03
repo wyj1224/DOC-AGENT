@@ -1,4 +1,4 @@
-export const ISSUE_TYPE_LABELS: Record<string, string> = {
+export const ISSUE_TYPE_LABELS = {
   standard_replaced: "标准已替代",
   standard_name_mismatch: "标准名称不一致",
   standard_no_mismatch: "标准编号不一致",
@@ -24,39 +24,19 @@ export const ISSUE_TYPE_LABELS: Record<string, string> = {
   key_section_content_added: "章节新增内容",
 };
 
-export const SEVERITY_LABELS: Record<string, string> = {
-  high: "高风险",
-  warning: "警告",
-  info: "提示",
-};
-
-export const CHECK_SCOPE_LABELS: Record<string, string> = {
+export const SEVERITY_LABELS = { high: "高风险", warning: "警告", info: "提示" };
+export const CHECK_SCOPE_LABELS = {
   basis_excel: "依据与标准库",
   body_basis: "正文与设计依据",
   completeness: "完整性检查",
 };
 
-export function issueTypeLabel(value: string) {
-  return ISSUE_TYPE_LABELS[value] ?? (value || "未知问题");
-}
+export const issueTypeLabel = (value) => ISSUE_TYPE_LABELS[value] || value || "未知问题";
+export const severityLabel = (value) => SEVERITY_LABELS[value] || value || "未知级别";
+export const checkScopeLabel = (value) => CHECK_SCOPE_LABELS[value] || value || "未知分类";
+export const knowledgeStatusLabel = (value) => ({ parsing: "解析中", parsed: "已入库", failed: "解析失败" }[value] || value);
 
-export function severityLabel(value: string) {
-  return SEVERITY_LABELS[value] ?? (value || "未知级别");
-}
-
-export function checkScopeLabel(value: string) {
-  return CHECK_SCOPE_LABELS[value] ?? (value || "未知分类");
-}
-
-export function runStatusLabel(value: string) {
-  return { running: "运行中", success: "已完成", failed: "失败" }[value] ?? value;
-}
-
-export function knowledgeStatusLabel(value: string) {
-  return { parsing: "解析中", parsed: "已入库", failed: "解析失败" }[value] ?? value;
-}
-
-export function translateDisplayText(value: string) {
+export function translateDisplayText(value) {
   const replacements = { ...ISSUE_TYPE_LABELS, ...CHECK_SCOPE_LABELS, ...SEVERITY_LABELS };
   return Object.entries(replacements)
     .sort(([left], [right]) => right.length - left.length)

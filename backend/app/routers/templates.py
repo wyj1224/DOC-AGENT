@@ -1,20 +1,15 @@
 from pathlib import Path
 import shutil
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from app.auth import get_current_user
 from app.config import BACKEND_ROOT
 from app.db.database import SessionLocal
 from app.db.models import WordTemplate, WordTemplateHeading, WordTemplateKeySection
 from app.services.template_ingest import ingest_word_template, template_type_label
 
 
-router = APIRouter(
-    prefix="/templates",
-    tags=["Word 模板"],
-    dependencies=[Depends(get_current_user)],
-)
+router = APIRouter(prefix="/templates", tags=["Word 模板"])
 UPLOAD_ROOT = BACKEND_ROOT / "data" / "uploads"
 
 

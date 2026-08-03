@@ -1,23 +1,24 @@
 from datetime import date
 from pathlib import Path
 import shutil
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from app.agent.tools import completeness_check_tool, get_issues_tool, parse_word_tool, word_check_tool
 from app.agent.workflow import DEFAULT_MAX_EDIT_CYCLES, run_word_edit_loop
-from app.auth import get_current_user
 from app.config import BACKEND_ROOT
 from app.db.database import SessionLocal
 from app.db.models import User, WordDocument, WordSection
 from app.services.word_editor import resolve_word_document_path
+from app.visitor import get_current_visitor
 
 
 router = APIRouter(
     prefix="/word",
     tags=["Word 校核"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(get_current_visitor)],
 )
 UPLOAD_ROOT = BACKEND_ROOT / "data" / "uploads"
 
@@ -25,7 +26,7 @@ UPLOAD_ROOT = BACKEND_ROOT / "data" / "uploads"
 @router.post("/upload")
 def upload_word(
     file: UploadFile = File(...),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_visitor),
 ):
     if Path(file.filename).suffix.lower() != ".docx":
         raise HTTPException(status_code=400, detail="当前本地解析只支持 .docx 文件")
@@ -33,7 +34,7 @@ def upload_word(
     upload_dir = UPLOAD_ROOT / "word"
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    file_path = upload_dir / Path(file.filename).name
+    file_path = upload_dir / f"{uuid4().hex}_{Path(file.filename).name}"
     with file_path.open("wb") as out:
         shutil.copyfileobj(file.file, out)
     return parse_word_tool(file_path=str(file_path), owner_user_id=user.id)
@@ -45,14 +46,16 @@ def check_word(
     publish_date: str = Form(""),
     replace: bool = Form(True),
     issue_limit: int = Form(50),
+    user: User = Depends(get_current_visitor),
 ):
     parsed_publish_date = date.fromisoformat(publish_date) if publish_date else None
-    document_id = document_id or latest_word_document_id()
+    document_id = document_id or latest_word_document_id(user.id)
     return word_check_tool(
         document_id=document_id,
         publish_date=parsed_publish_date,
         replace=replace,
         issue_limit=issue_limit,
+        owner_user_id=user.id,
     )
 
 
@@ -62,13 +65,15 @@ def check_word_completeness(
     template_id: int | None = Form(None),
     replace: bool = Form(True),
     issue_limit: int = Form(50),
+    user: User = Depends(get_current_visitor),
 ):
-    document_id = document_id or latest_word_document_id()
+    document_id = document_id or latest_word_document_id(user.id)
     return completeness_check_tool(
         document_id=document_id,
         template_id=template_id,
         replace=replace,
         issue_limit=issue_limit,
+        owner_user_id=user.id,
     )
 
 
@@ -79,6 +84,7 @@ def get_word_issues(
     issue_type: str = "",
     severity: str = "",
     issue_limit: int = 50,
+    user: User = Depends(get_current_visitor),
 ):
     return get_issues_tool(
         document_id=document_id,
@@ -86,6 +92,7 @@ def get_word_issues(
         issue_type=issue_type,
         severity=severity,
         issue_limit=issue_limit,
+        owner_user_id=user.id,
     )
 
 
@@ -93,7 +100,7 @@ def get_word_issues(
 def fix_word_consistency(
     document_id: int = Form(...),
     max_attempts: int = Form(DEFAULT_MAX_EDIT_CYCLES),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_visitor),
 ):
     return run_word_edit_loop(
         message="请修复当前 Word 文档中的一致性问题并生成修订副本",
@@ -106,7 +113,7 @@ def fix_word_consistency(
 @router.get("/documents/{document_id}/download")
 def download_word_document(
     document_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_visitor),
 ):
     with SessionLocal() as session:
         document = session.get(WordDocument, document_id)
@@ -121,10 +128,14 @@ def download_word_document(
 
 
 @router.get("/sections")
-def get_word_sections(document_id: int, limit: int = 0):
+def get_word_sections(
+    document_id: int,
+    limit: int = 0,
+    user: User = Depends(get_current_visitor),
+):
     with SessionLocal() as session:
         document = session.get(WordDocument, document_id)
-        if not document:
+        if not document or document.owner_user_id != user.id:
             raise HTTPException(status_code=404, detail="document not found")
         sections = (
             session.query(WordSection)
@@ -142,9 +153,14 @@ def get_word_sections(document_id: int, limit: int = 0):
         }
 
 
-def latest_word_document_id() -> int:
+def latest_word_document_id(owner_user_id: int) -> int:
     with SessionLocal() as session:
-        document = session.query(WordDocument).order_by(WordDocument.id.desc()).first()
+        document = (
+            session.query(WordDocument)
+            .filter(WordDocument.owner_user_id == owner_user_id)
+            .order_by(WordDocument.id.desc())
+            .first()
+        )
         if not document:
             raise HTTPException(status_code=400, detail="请先上传 Word 文件")
         return document.id

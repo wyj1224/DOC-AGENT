@@ -1,6 +1,6 @@
 # DOC AGENT Backend
 
-后端基于 FastAPI，负责用户认证、会话记忆、Agent 编排、Word 一致性与完整性校验、Excel 标准库和通用知识库 RAG。
+后端基于 FastAPI，负责匿名访客隔离、会话记忆、Agent 编排、Word 一致性与完整性校验、Excel 标准库和通用知识库 RAG。
 
 详细源码职责见根目录 [agent.md](../agent.md)。本文只保留后端运行、配置、数据库、接口和命令速查。
 
@@ -9,7 +9,7 @@
 | 组件 | 用途 |
 | --- | --- |
 | FastAPI | HTTP API 与 SSE 响应 |
-| PostgreSQL | 用户、会话、标准库、Word 解析结果、问题和运行记录 |
+| PostgreSQL | 匿名访客、会话、标准库、Word 解析结果、问题和运行记录 |
 | Milvus Lite | 强条向量集合与通用知识库双向量集合 |
 | DeepSeek | Agent Planner、最终回答和 RAG 引用回答 |
 | 千问 Embedding | 通用知识库稠密向量 |
@@ -47,8 +47,9 @@ cp .env.example .env
 | 变量 | 用途 |
 | --- | --- |
 | `DATABASE_URL` | PostgreSQL SQLAlchemy 连接串 |
-| `JWT_SECRET` | JWT 签名密钥，必须替换示例值 |
-| `JWT_EXPIRE_MINUTES` | Token 有效时间 |
+| `VISITOR_COOKIE_SECRET` | 匿名访客 Cookie 的 HMAC 签名密钥 |
+| `VISITOR_COOKIE_DAYS` | 访客 Cookie 保存天数，默认 90 |
+| `VISITOR_COOKIE_SECURE` | HTTPS 部署时设为 `true` |
 | `DEEPSEEK_API_KEY` | Planner 和回答模型密钥 |
 | `DEEPSEEK_BASE_URL` | DeepSeek OpenAI Compatible 地址 |
 | `DEEPSEEK_MODEL` | Agent 使用的模型名 |
@@ -102,9 +103,9 @@ python -m uvicorn app.main:app --reload
 
 | 表 | 内容 |
 | --- | --- |
-| `users` | 用户名、显示名和密码哈希 |
-| `agent_sessions` | 用户会话、消息 JSONB、摘要和最近文档/运行 ID |
-| `check_runs` | Agent 工具计划、工具结果、回答、耗时和运行状态 |
+| `users` | 内部匿名访客映射；保留原表名以兼容现有外键 |
+| `agent_sessions` | 访客会话、消息 JSONB、摘要和最近文档/运行 ID |
+| `check_runs` | 单轮 Agent 运行，通过 `session_id` 关联会话、`run_type` 标记运行类型，并保存工具计划、结果、回答、耗时和状态 |
 | `word_edit_runs` | 每次 Word 修改请求的唯一任务记录；保存按 cycle 累积的 `changes`、LLM/工具决策轨迹、执行状态、最新副本和复检关联 |
 | `clause_extraction_runs` | PDF 强条 Agent 任务；保存文件指纹、视觉/OCR 证据、`result_json`、状态和决策轨迹 |
 | `mandatory_clauses` | Excel 强制性条文记录 |
@@ -120,29 +121,15 @@ python -m uvicorn app.main:app --reload
 
 `app.db.database.init_db()` 除 `create_all` 外，还包含开发阶段的兼容性字段和索引补齐。新增正式迁移需求后应改用 Alembic。
 
-## 6. 认证
+## 6. 匿名访客隔离
 
-公开接口：
+系统不提供登录和注册。浏览器第一次请求时，后端自动设置 `doc_agent_visitor` HttpOnly Cookie；后续请求通过该 Cookie 定位内部匿名访客记录。
 
-```text
-GET  /health
-POST /auth/register
-POST /auth/login
-```
-
-登录成功后，业务请求需要：
-
-```http
-Authorization: Bearer <access_token>
-```
-
-当前用户：
-
-```text
-GET /auth/me
-```
-
-会话和 Agent 运行记录会按当前用户过滤。知识库、模板和 Excel 标准库当前作为共享资料库使用。
+- 会话、Word/PDF、问题、修改任务和强条抽取任务按访客过滤。
+- Cookie 默认保存 90 天，刷新页面不会丢失会话。
+- 清除 Cookie、切换浏览器或设备会获得新的访客身份。
+- 知识库、Word 模板和 Excel 标准库属于全局共享资料，不绑定访客。
+- 公共工作台在 5174，独立资料管理页在 5175；当前管理页采用入口隔离，没有应用层权限校验。
 
 ## 7. 主要接口
 
@@ -187,7 +174,7 @@ GET  /word/documents/{document_id}/download
 - `/word/check` 执行依据 vs Excel 和正文 vs 依据的一致性检查。
 - `/word/completeness-check` 自动匹配模板，检查标题、正文和占位符，并比较三个关键章节的正文及子章节编号；文字相似度低于 95% 报警。
 - `/word/fix-consistency` 启动外层 Word Agent Loop：Agent 根据每步 Observation 逐步调用 `inspect`、`prepare`、`apply` 和 `verify`，工具仅修改一致性检查中的警告和高风险问题，并生成副本。
-- `/word/documents/{document_id}/download` 下载当前用户的原文或修订副本。
+- `/word/documents/{document_id}/download` 只允许下载当前访客的原文或修订副本。
 
 Word 修订不再由一个固定顺序、固定轮数的内部函数编排。外层 Agent 工作流在一次请求内只创建一条 `WordEditRun`，并在同一条记录的 `changes` 中累积各 cycle 的精确修改。LLM 只选择下一动作和可修问题 ID；`before/after`、`fix_data`、`locator` 和 `span` 始终由确定性服务构造和校验。`max_steps` 与 `max_cycles` 是异常循环的安全预算，不代表预设两轮或其他固定流程。
 

@@ -29,6 +29,58 @@ def init_db() -> None:
         connection.execute(text("ALTER TABLE check_issues ADD COLUMN IF NOT EXISTS clause_no VARCHAR(64) NOT NULL DEFAULT ''"))
         connection.execute(text("ALTER TABLE check_issues ADD COLUMN IF NOT EXISTS check_scope VARCHAR(32) NOT NULL DEFAULT ''"))
         connection.execute(text("ALTER TABLE check_issues ADD COLUMN IF NOT EXISTS fix_data JSONB NOT NULL DEFAULT '{}'::jsonb"))
+        connection.execute(text("ALTER TABLE check_runs ADD COLUMN IF NOT EXISTS session_id INTEGER REFERENCES agent_sessions(id) ON DELETE SET NULL"))
+        connection.execute(text("ALTER TABLE check_runs ADD COLUMN IF NOT EXISTS run_type VARCHAR(32) NOT NULL DEFAULT 'unknown'"))
+        connection.execute(text("""
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'agent_sessions' AND column_name = 'last_check_run_id'
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'agent_sessions' AND column_name = 'last_word_check_run_id'
+                ) THEN
+                    ALTER TABLE agent_sessions RENAME COLUMN last_check_run_id TO last_word_check_run_id;
+                END IF;
+            END $$;
+        """))
+        connection.execute(text("""
+            UPDATE check_runs
+            SET run_type = CASE
+                WHEN tool_plan ->> 'mode' = 'word_edit' OR tool_results::text LIKE '%word_edit_result%' THEN 'word_edit'
+                WHEN tool_plan ->> 'mode' = 'clause_extract' OR tool_results::text LIKE '%clause_extraction_result%' THEN 'clause_extract'
+                WHEN tool_results::text LIKE '%knowledge_query_tool%' THEN 'knowledge'
+                WHEN tool_results::text LIKE '%word_check_tool%'
+                  OR tool_results::text LIKE '%completeness_check_tool%'
+                  OR tool_results::text LIKE '%get_issues_tool%' THEN 'word_check'
+                ELSE 'general'
+            END
+            WHERE run_type = 'unknown';
+        """))
+        connection.execute(text("""
+            UPDATE check_runs AS run
+            SET session_id = agent_session.id
+            FROM agent_sessions AS agent_session
+            WHERE run.session_id IS NULL
+              AND EXISTS (
+                  SELECT 1
+                  FROM jsonb_array_elements(agent_session.messages) AS message
+                  WHERE message ->> 'run_id' ~ '^[0-9]+$'
+                    AND (message ->> 'run_id')::integer = run.id
+              );
+        """))
+        connection.execute(text("""
+            UPDATE agent_sessions AS agent_session
+            SET last_word_check_run_id = (
+                SELECT run.id
+                FROM check_runs AS run
+                WHERE run.session_id = agent_session.id
+                  AND run.run_type = 'word_check'
+                ORDER BY run.id DESC
+                LIMIT 1
+            );
+        """))
         connection.execute(text("ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS active_edit_run_id INTEGER"))
         connection.execute(text("ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS active_clause_extraction_run_id INTEGER"))
         connection.execute(text("ALTER TABLE word_edit_runs ADD COLUMN IF NOT EXISTS decision_trace JSONB NOT NULL DEFAULT '[]'::jsonb"))
@@ -37,5 +89,6 @@ def init_db() -> None:
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_check_issues_document_paragraph ON check_issues (document_id, paragraph_index)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_check_issues_document_scope ON check_issues (document_id, check_scope)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_check_runs_document_status ON check_runs (document_id, status)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_check_runs_session_type ON check_runs (session_id, run_type)"))
         connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_word_documents_edit_run_cycle ON word_documents (edit_run_id, edit_cycle)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_word_templates_year_type ON word_templates (template_year, template_type)"))

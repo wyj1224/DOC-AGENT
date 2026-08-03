@@ -243,7 +243,11 @@ class CheckRun(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     owner_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    session_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_sessions.id", ondelete="SET NULL"), nullable=True
+    )
     document_id: Mapped[int | None] = mapped_column(ForeignKey("word_documents.id"), nullable=True)
+    run_type: Mapped[str] = mapped_column(String(32), default="unknown", nullable=False)
     user_message: Mapped[str] = mapped_column(Text, default="", nullable=False)
     tool_plan: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     tool_results: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
@@ -257,6 +261,7 @@ class CheckRun(Base, TimestampMixin):
 
     __table_args__ = (
         Index("ix_check_runs_document_status", "document_id", "status"),
+        Index("ix_check_runs_session_type", "session_id", "run_type"),
     )
 
 
@@ -294,7 +299,7 @@ class AgentSession(Base, TimestampMixin):
     last_run_id: Mapped[int | None] = mapped_column(
         ForeignKey("check_runs.id", ondelete="SET NULL"), nullable=True
     )
-    last_check_run_id: Mapped[int | None] = mapped_column(
+    last_word_check_run_id: Mapped[int | None] = mapped_column(
         ForeignKey("check_runs.id", ondelete="SET NULL"), nullable=True
     )
     active_edit_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)

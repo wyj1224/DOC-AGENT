@@ -18,6 +18,10 @@ VISION_CONCURRENCY = 4
 VISION_MAX_IMAGE_EDGE = 2000
 PIXEL_RENDER_SCALE = 3.0
 CLAUSE_NO_PATTERN = re.compile(r"(?<!\d)(\d{1,2}(?:[.．。]\d{1,2}){1,3})(?!\d)")
+CLAUSE_REF_PATTERN = re.compile(
+    r"(?<!\d)(?P<clause>\d{1,2}(?:[.．。]\d{1,2}){1,3})"
+    r"(?:\s*(?:#|第)\s*(?P<item>\d{1,2})\s*(?:款)?)?"
+)
 VISION_PROMPT = """
 你是工程建设规范 PDF 的视觉证据识别器。你会收到若干张按 PDF 物理页码标注的页面图片。
 
@@ -25,12 +29,13 @@ VISION_PROMPT = """
 同一物理页会拆成有重叠的上、中、下三个区域。必须逐行检查三个区域直到页面底部，合并为该物理页的一条结果，不能只检查页面开头。
 
 每页需要识别：
-1. announcement_clause_nos：仅提取页面明确声明“第……条为强制性条文”时，该声明列出的完整条号。
-2. bold_clause_nos：仅提取条号和整条正文采用黑体/粗体排版的条文。必须同时比较同一区域的相邻普通条文；中文黑体与普通宋体的差异还包括笔画粗细更均匀、字形更方正、衬线和收笔不同，不一定表现为整行灰度大幅变黑。普通条号本身偏粗、章节标题、表名、表头、编号列表和水印都不是强条证据。若只有措辞强烈但字体与相邻正文相同，不得返回。
-3. has_bold_rule：页面是否明确写明“黑体字/粗体标注的条文为强制性条文”。
-4. has_explicit_no_mandatory：页面是否明确写明本规范无强制性条文或不设强制性条文。仅仅没有看到粗体不能算明确无强条。
-5. evidence_text：最多保留两条支持上述判断的短原文，不要抄整页。
-6. confidence：0 到 1。
+1. announcement_clause_nos：提取公告列出的主条号并去重。
+2. announcement_clause_refs：按强制执行单元展开；整条写成“1.0.3”，仅某款时写成“5.1.9#7”。例如“5.1.9 条第 7、8、9 款”必须返回 ["5.1.9#7", "5.1.9#8", "5.1.9#9"]。
+3. bold_clause_nos：仅提取条号和整条正文采用黑体/粗体排版的条文。必须同时比较同一区域的相邻普通条文；中文黑体与普通宋体的差异还包括笔画粗细更均匀、字形更方正、衬线和收笔不同，不一定表现为整行灰度大幅变黑。普通条号本身偏粗、章节标题、表名、表头、编号列表和水印都不是强条证据。若只有措辞强烈但字体与相邻正文相同，不得返回。
+4. has_bold_rule：页面是否明确写明“黑体字/粗体标注的条文为强制性条文”。
+5. has_explicit_no_mandatory：页面是否明确写明本规范无强制性条文或不设强制性条文。仅仅没有看到粗体不能算明确无强条。
+6. evidence_text：最多保留两条支持上述判断的短原文，不要抄整页。
+7. confidence：0 到 1。
 
 只返回 JSON，不要 Markdown，不要解释。格式必须是：
 {
@@ -38,6 +43,7 @@ VISION_PROMPT = """
     {
       "page_no": 1,
       "announcement_clause_nos": [],
+      "announcement_clause_refs": [],
       "bold_clause_nos": [],
       "has_bold_rule": false,
       "has_explicit_no_mandatory": false,
@@ -59,6 +65,7 @@ BOLD_LINE_OCR_PROMPT = """
     {
       "page_no": 1,
       "announcement_clause_nos": [],
+      "announcement_clause_refs": [],
       "bold_clause_nos": [],
       "has_bold_rule": false,
       "has_explicit_no_mandatory": false,
@@ -430,6 +437,9 @@ def normalize_visual_page(
         "announcement_clause_nos": normalize_clause_numbers(
             value.get("announcement_clause_nos")
         ),
+        "announcement_clause_refs": normalize_clause_references(
+            value.get("announcement_clause_refs")
+        ),
         "bold_clause_nos": normalize_clause_numbers(value.get("bold_clause_nos")),
         "has_bold_rule": bool(value.get("has_bold_rule")),
         "has_explicit_no_mandatory": bool(
@@ -458,6 +468,18 @@ def normalize_clause_numbers(value: object) -> list[str]:
         clause_no = item.replace("．", ".").replace("。", ".")
         if clause_no not in output:
             output.append(clause_no)
+    return output
+
+
+def normalize_clause_references(value: object) -> list[str]:
+    items = [value] if isinstance(value, str) else value if isinstance(value, list) else []
+    output: list[str] = []
+    for item in items:
+        for match in CLAUSE_REF_PATTERN.finditer(str(item)):
+            clause_no = match.group("clause").replace("．", ".").replace("。", ".")
+            reference = f"{clause_no}#{match.group('item')}" if match.group("item") else clause_no
+            if reference not in output:
+                output.append(reference)
     return output
 
 

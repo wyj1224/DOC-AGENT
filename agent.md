@@ -2,8 +2,8 @@
 
 本文档以当前仓库代码为准，主要用于后续学习、维护和继续开发。
 
-- 最后核对日期：2026-07-16。
-- 当前主链路：Word 一致性校核、完整性校核与三个关键章节 Diff、Word 修改 Agent Loop、PDF 强条抽取 Agent Loop、RAG、会话记忆和统一前端均已落地；正式业务评测集仍在补充。
+- 最后核对日期：2026-07-21。
+- 当前主链路：Word 一致性校核、完整性校核与三个关键章节 Diff、Word 修改 Agent Loop、PDF 强条抽取 Agent Loop、RAG 和会话记忆均已落地；系统已改为匿名访客直接使用，并拆分 Vue 2 公共工作台与资料管理页。
 
 - 第一部分是完整代码地图，说明主要目录和源码文件分别负责什么。
 - 第二部分以后记录模块边界、运行流程、数据库、业务规则、当前完成情况和后续目标。
@@ -25,8 +25,10 @@
 │   └── 当前代码地图、功能状态、业务规则和后续开发目标
 ├── backend/
 │   └── FastAPI 后端、Agent、数据库、校验服务和 RAG
-├── frontend/
-│   └── React 前端工作台
+├── frontend-vue2/
+│   └── Vue 2.7 公共文档工作台，无需登录
+├── frontend-admin-vue2/
+│   └── Vue 2.7 资料管理页，只维护知识库、Word 模板和 Excel 标准库
 ├── scripts/
 │   └── 与在线系统分开的报告生成脚本
 ├── output/
@@ -99,13 +101,13 @@ backend/app/
 ├── main.py
 │   └── 创建 FastAPI 应用、配置 CORS、注册全部路由、启动时初始化数据库
 ├── config.py
-│   └── 读取路径、数据库、JWT、DeepSeek、千问文本/视觉、LlamaParse 和 Milvus 配置
-├── auth.py
-│   └── Argon2 密码哈希、密码校验、JWT 生成解析和当前用户依赖
+│   └── 读取路径、数据库、访客 Cookie、DeepSeek、千问文本/视觉、LlamaParse 和 Milvus 配置
+├── visitor.py
+│   └── 生成并校验签名 visitor Cookie，将匿名浏览器映射为内部 owner_user_id
 ├── llm.py
 │   └── 创建 OpenAI Compatible 大模型客户端、统一调用 DeepSeek，并提供用户报告的统一排版规范
 ├── schemas.py
-│   └── 跨模块共用的数据结构，例如 TextChunk
+│   └── 跨模块共用的数据结构；`TextChunk.as_milvus_row()` 负责把切块和稠密向量转换为强条 Milvus 集合要求的入库字段
 ├── chunking.py
 │   └── 通用文本和 Markdown 切块辅助逻辑
 ├── excel_loader.py
@@ -130,8 +132,6 @@ backend/app/routers/
 │   └── 路由包标记
 ├── system.py
 │   └── 健康检查接口 GET /health
-├── auth.py
-│   └── 注册、登录和当前用户接口 /auth/*
 ├── agent.py
 │   └── Agent 普通/流式请求、会话历史、运行记录和删除接口 /agent/*
 ├── word.py
@@ -144,7 +144,7 @@ backend/app/routers/
     └── 通用知识库上传、列表、删除和问答 /knowledge/*
 ```
 
-路由层负责 HTTP 参数、上传文件、认证依赖和响应格式；核心业务放在 `services/` 或 `agent/` 中。
+路由层负责 HTTP 参数、上传文件、匿名访客依赖和响应格式；核心业务放在 `services/` 或 `agent/` 中。知识库、模板和 Excel 管理接口不绑定访客，作为共享资料维护接口使用。
 
 ### 1.5 Agent 编排层
 
@@ -187,9 +187,9 @@ backend/app/agent/
 
 | 工具 | 职责 |
 | --- | --- |
-| `inspect_clause_pdf_tool` | 用视觉模型判断公告/黑体规则/无强条证据；黑体型再按原页笔画筛行并让视觉模型读取条号，同时用 LlamaParse 保存分页正文 OCR |
-| `extract_clause_candidates_tool` | 根据视觉确认的条号在分页 OCR 中定位正文，不依据 Markdown 粗体猜测强条 |
-| `verify_clause_candidates_tool` | 检查公告条号是否缺失、粗体证据是否可确认，并决定是否需要人工复核 |
+| `inspect_clause_pdf_tool` | 判断公告/黑体规则/无强条证据；公告支持展开到“条 + 第几款”，黑体型按原页笔画筛行并让视觉模型读取条号，同时准备可检索的分页正文 |
+| `extract_clause_candidates_tool` | 根据已确认的条号或款级引用在分页正文中逐项定位内容，不依据 Markdown 粗体或强制措辞猜测强条 |
+| `verify_clause_candidates_tool` | 按强制执行单元检查公告引用是否缺失、粗体证据是否可确认，并决定完成还是进入人工复核 |
 
 ### 1.6 业务服务层
 
@@ -218,7 +218,7 @@ backend/app/services/
 ├── completeness_check.py
 │   └── 模板匹配、缺少标题、正文为空、占位符和关键章节差异检查
 ├── clause_extraction.py
-│   └── 强条抽取任务、PDF 分页缓存、三类证据识别、结果验证、任务记忆和追问回答
+│   └── 强条抽取任务、PDF 分页缓存、原生文字层/OCR 回查、条及款级引用展开、正文定位、结果验证、任务记忆和追问回答
 ├── pdf_vision.py
 │   └── 用 PyMuPDF 渲染页面、按相对笔画筛选粗体行，并通过百炼视觉模型读取结构化条号证据
 ├── knowledge_base.py
@@ -243,7 +243,7 @@ backend/app/db/
 
 | 模型/表 | 主要用途 |
 | --- | --- |
-| `User / users` | 用户名、显示名和密码哈希 |
+| `User / users` | 内部匿名访客映射；沿用原表名以避免重建全部 owner 外键，登录密码字段不再使用 |
 | `MandatoryClause / mandatory_clauses` | 强制性条文结构化记录 |
 | `StandardValidityRecord / standard_validity_records` | 新旧标准替代和有效日期 |
 | `KnowledgeDocument / knowledge_documents` | RAG 文件、解析状态、页数和切块数 |
@@ -254,7 +254,7 @@ backend/app/db/
 | `WordReference / word_references` | Word 中抽出的标准引用及精确写回位置 `locator` |
 | `WordSection / word_sections` | Word 标题和标题之间的正文区间 |
 | `CheckIssue / check_issues` | 一致性和完整性问题；一致性问题可带固定 `fix_data` |
-| `CheckRun / check_runs` | Agent 计划、工具结果、回答、耗时和状态 |
+| `CheckRun / check_runs` | 单轮 Agent 运行；通过 `session_id` 归属会话，`run_type` 区分 word_check、word_edit、knowledge、clause_extract 等类型，并保存计划、工具结果、回答、耗时和状态 |
 | `WordEditRun / word_edit_runs` | 每次 Word 修改请求的唯一任务；`changes` 累积保存所有 cycle 的修改记忆，同时保存 LLM/工具轨迹、最新输出文档、复检和状态 |
 | `AgentSession / agent_sessions` | 用户会话、消息 JSONB、摘要和最近文档/运行关联 |
 | `ClauseExtractionRun / clause_extraction_runs` | 单次 PDF 强条抽取任务；保存文件指纹、状态、识别方法、`result_json`、Agent 决策轨迹和复核信息 |
@@ -284,67 +284,90 @@ backend/app/cli/
 ```text
 backend/tests/
 ├── test_clause_extraction_agent.py
-│   └── 验证强条 Agent 单步循环、动作约束、视觉证据合并、公告条号和正文定位
+│   └── 验证强条 Agent 单步循环、动作约束、视觉证据合并、原生文字层回查、OCR 断行纠偏、公告款级展开和正文定位
 ├── test_pdf_vision.py
 │   └── 验证视觉模型 JSON 规范化、缺页降级和结构化响应解析
 ├── test_key_section_diff.py
 │   └── 验证三个关键章节子树提取、正文差异和子章节编号变化
 ├── test_word_edit_agent.py
 │   └── 验证单条 WordEditRun、多 cycle 规划、状态动作约束、失败关闭和最终文档推断
-└── test_word_editing.py
-    └── 验证精确字符区间写回、原件不变以及 Word run 样式保留
+├── test_word_editing.py
+│   └── 验证精确字符区间写回、原件不变以及 Word run 样式保留
+├── test_run_tracking.py
+│   └── 验证运行类型识别，以及只有 Word 检查会更新最近 Word 校核指针
+└── test_visitor.py
+    └── 验证匿名访客 Cookie 签名、恢复和篡改拒绝
 ```
 
-当前自动化回归共 25 项，覆盖强条抽取、关键章节 Diff、Word 修改 Agent 状态约束和精确写回。最近一次完整运行结果为 25/25 通过。
+当前自动化回归共 32 项，覆盖强条抽取、关键章节 Diff、Word 修改 Agent 状态约束、运行类型追踪、精确写回和访客 Cookie。最近一次完整运行结果为 32/32 通过。
 
-### 1.10 前端代码树
+### 1.10 Vue 2.7 公共工作台代码树
 
 ```text
-frontend/
+frontend-vue2/
 ├── package.json
-│   └── 前端依赖和 dev/build/preview 命令
-├── pnpm-lock.yaml
-│   └── pnpm 锁定依赖版本
-├── pnpm-workspace.yaml
-│   └── pnpm 工作区配置
-├── tsconfig.json
-│   └── TypeScript 编译配置
-├── vite.config.ts
-│   └── Vite React 插件和本地 5173 端口
+│   └── Vue 2.7、Vite、Lucide Vue 依赖及 dev/build/preview 命令
+├── package-lock.json
+│   └── npm 锁定依赖版本
+├── vite.config.js
+│   └── Vue 2 插件和本地 5174 端口
 ├── index.html
 │   └── 浏览器 HTML 入口
-├── dist/
-│   └── pnpm build 生成的静态文件，不是源代码
+├── .env.example
+│   └── 可选的 VITE_API_BASE 配置示例
+├── README.md
+│   └── Vue 2 公共工作台启动说明和匿名访客边界
 └── src/
-    ├── main.tsx
-    │   └── React 挂载入口
-    ├── App.tsx
-    │   └── 登录状态、会话、三种工作模式、附件直发、流式请求取消和主要页面状态协调
-    ├── types.ts
-    │   └── API 响应、会话、问题、来源和组件 Props 类型
+    ├── main.js
+    │   └── Vue 2 应用挂载入口
+    ├── App.vue
+    │   └── 无登录根组件，直接进入公共工作区
     ├── styles.css
-    │   └── 浅色主题、三栏布局、固定结果概览/独立滚动列表、紧凑附件输入框和响应式样式
+    │   └── 完整浅色工作台、三栏布局、输入区、结果面板和响应式样式
     ├── lib/
-    │   ├── api.ts
-    │   │   └── API Base、JWT 请求头、统一错误处理、SSE 事件解析和 AbortSignal 中止
-    │   └── labels.ts
-    │       └── 内部问题类型、范围和严重程度的中文显示名称
+    │   ├── api.js
+    │   │   └── API Base、携带 Cookie 的 REST/SSE、AbortController 和下载逻辑
+    │   └── labels.js
+    │       └── 问题类型、范围和严重程度的中文显示名称
     └── components/
-        ├── AuthScreen.tsx
-        │   └── 登录、注册和认证错误提示
-        ├── AppSidebar.tsx
-        │   └── 产品入口、新对话、历史会话、删除会话和设置入口
-        ├── ChatWorkspace.tsx
-        │   └── 同一对话框内切换三种模式，管理紧凑 Word/PDF 附件卡、IME 安全回车、附件直发及发送/停止同键交互
-        ├── ResultPanel.tsx
-        │   └── 固定结果数量/统计/范围概览，在下方独立滚动展示校核问题、强条结果、Agent Trace、知识来源和 Word 修订结果
-        ├── SettingsPanel.tsx
-        │   └── 知识库、Word 模板、Excel 标准库和账户管理
-        └── ui.tsx
-            └── Button、加载状态、Toast、确认弹窗和简易 Markdown 组件
+        ├── Workspace.vue
+        │   └── 匿名会话、附件、三模式、流式请求和结果状态协调
+        ├── AppSidebar.vue
+        │   └── 新建对话、当前访客历史会话和删除入口
+        ├── ChatWorkspace.vue
+        │   └── 三模式输入区、紧凑附件、IME 安全回车和发送/停止同键交互
+        ├── ResultPanel.vue
+        │   └── 校核、强条、RAG、Word 修改结果和 Agent Trace
+        ├── ReportMarkdown.vue
+        │   └── 先转义 HTML、再渲染有限 Markdown 的安全报告组件
+        └── EmptyState.vue
+            └── 空结果占位组件
 ```
 
-### 1.11 独立脚本与输出
+### 1.11 Vue 2.7 资料管理页代码树
+
+```text
+frontend-admin-vue2/
+├── package.json / package-lock.json
+│   └── Vue 2.7、Vite、Lucide Vue 依赖和锁定版本
+├── vite.config.js
+│   └── 独立 5175 开发端口
+├── index.html
+│   └── 资料管理页面入口
+└── src/
+    ├── main.js
+    │   └── Vue 挂载入口
+    ├── App.vue
+    │   └── 知识库、Word 模板、Excel 标准库三个维护模块及全部交互状态
+    ├── lib/api.js
+    │   └── 共用 8000 后端的请求和错误处理
+    └── styles.css
+        └── 复用公共视觉规范并补充独立管理页布局
+```
+
+公共工作台不包含管理入口。两套 Vue 前端共用 8000 后端、PostgreSQL、Milvus 和文件存储；`backend/app/main.py` 的本地 CORS 允许 5174 和 5175。当前资料管理页采用网址入口隔离，不做账号权限控制。
+
+### 1.12 独立脚本与输出
 
 ```text
 scripts/
@@ -360,26 +383,28 @@ output/pdf/
 
 | 模块 | 输入 | 核心处理 | 输出/存储 |
 | --- | --- | --- | --- |
-| 用户认证 | 用户名、密码 | Argon2、JWT | `users`、Access Token |
+| 匿名访客 | 浏览器 Cookie | HMAC 签名、自动创建内部访客映射 | `users`、HttpOnly Cookie |
 | 会话记忆 | 用户消息、会话 ID | 上下文拼接、阶段摘要 | `agent_sessions` |
 | Agent 编排 | 用户意图、附件、上下文 | 识别 standard/word_edit/clause_extract；普通工具计划或逐步 Agent Loop | `check_runs`、任务表、流式回答 |
 | Word 修改 Agent | 修改意图、当前文档、数据库状态 | 推导允许动作、LLM 单步决策、确定性写回和复检 | `word_edit_runs.changes/decision_trace`、修订副本、复检记录 |
-| 强条抽取 Agent | 单次 PDF、会话上下文、任务状态 | 自动判断证据类型、逐步检查/抽取/验证、LLM 终止决策 | `clause_extraction_runs.result_json/decision_trace`、分页缓存 |
+| 强条抽取 Agent | 单次 PDF、会话上下文、任务状态 | 自动判断证据类型、逐步检查/抽取/验证、按“条/款”强制执行单元计数、LLM 终止决策 | `clause_extraction_runs.result_json/decision_trace`、分页缓存 |
 | Excel 标准库 | `.xlsx` | sheet/列识别、结构化导入 | `mandatory_clauses`、`standard_validity_records` |
 | Word 解析 | `.docx` | 标题、段落、表格、引用和章节区间 | `word_documents`、`word_references`、`word_sections` |
 | 一致性校验 | Word 引用、Excel 标准库 | 规则匹配、优先级、去重 | `check_issues` |
 | 完整性校验 | 待检 Word、模板标题与三个关键章节快照 | 模板匹配、标题/正文/占位符检查、关键章节正文与子章节编号 Diff、95% 阈值判断 | `word_template_key_sections`、`check_issues` |
 | RAG 入库 | PDF/Word 等知识文件 | LlamaParse、切块、分词、Embedding | PostgreSQL、Milvus |
 | RAG 问答 | 自然语言问题 | 混合检索、引用编号、LLM 总结 | 回答与来源切块 |
-| 前端 | 用户操作 | 一个对话工作区内切换三种模式，复用 API/SSE 和会话历史 | 聊天界面、结果面板 |
+| 公共前端 | 用户操作 | Vue 2.7 工作台切换三种模式，通过访客 Cookie 复用 API/SSE 和会话历史 | 聊天界面、结果面板 |
+| 管理前端 | 资料文件 | 独立 Vue 2.7 页面维护知识库、Word 模板和 Excel 标准库 | 全局共享资料 |
 
 ## 3. 主要运行流程
 
 ### 3.1 Agent 会话流程
 
 ```text
-登录用户发送消息/附件
-  -> 根据 session_id 读取或新建用户会话
+浏览器直接发送消息/附件
+  -> 后端校验或创建 visitor Cookie，并映射内部 owner_user_id
+  -> 根据 session_id 读取或新建该访客的会话
   -> 将摘要和最近消息拼成对话上下文
   -> 前端模式与 Planner 共同确定 standard、word_edit 或 clause_extract
   -> standard：Planner 生成普通工具 steps，registry 顺序调用确定性工具
@@ -396,17 +421,17 @@ output/pdf/
 
 | 项目 | 当前规则 |
 | --- | --- |
-| 用户隔离 | `agent_sessions.owner_user_id` |
+| 访客隔离 | 签名 Cookie -> 内部 `users.id` -> `agent_sessions.owner_user_id` |
 | 会话隔离 | 每个会话单独一个 `session_id` |
 | 消息存储 | `messages` JSONB，只保存用户消息和最终回答 |
 | 摘要阈值 | 每累计 12 条未总结消息触发摘要 |
 | 原文保留 | 保留最近 6 条消息参与后续上下文 |
 | 当前文档 | `active_document_id` |
 | 最近运行 | `last_run_id` |
-| 最近校核 | `last_check_run_id` |
+| 最近 Word 校核 | `last_word_check_run_id`；只在 `run_type=word_check` 时更新 |
 | 最近修改任务 | `active_edit_run_id` |
 | 最近强条任务 | `active_clause_extraction_run_id` |
-| 工具 Trace | 保存在 `check_runs`，不作为另一套日常对话记忆 |
+| 工具 Trace | 保存在带 `session_id/run_type` 的 `check_runs`，不作为另一套日常对话记忆 |
 
 ### 3.2 一致性校验流程
 
@@ -459,6 +484,8 @@ output/pdf/
   -> DeepSeek 仅依据检索材料生成带编号回答
   -> 前端展示回答和引用来源
 ```
+
+项目中有两个不同的 Milvus 集合：`mandatory_clause_chunks` 是早期 Excel 强条的单稠密向量集合，仅由 `cli/ingest_excel.py`、`milvus_store.py` 和 `cli/search.py` 使用；`TextChunk.as_milvus_row()` 正是该集合的入库字段适配器。当前前端知识问答使用的是 `knowledge_chunks` 双向量集合，由 `KnowledgeMilvusStore` 单独组装入库行，不调用 `as_milvus_row()`。因此这个方法当前不是死代码，但也不属于通用 RAG 主链路。
 
 ### 3.5 一致性自动修订流程
 
@@ -532,7 +559,7 @@ output/pdf/
 
 只有 `prepare`、`apply` 和 `verify` 会更新 `changes`；LLM 决策和工具返回写入 `decision_trace`。上一条 `latest_observation` 是当前 Python 进程内的循环变量，未单独存入数据库，因此数据库状态、`changes` 和 Trace 可以审计，但服务进程中断后目前不会自动从中断点恢复 Loop。
 
-启动任务时只更新会话的 `active_edit_run_id`；最终 `finish/manual_review` 时才把最终文档写入 `AgentSession.active_document_id`，并在存在复检时更新 `last_check_run_id`。
+启动任务时只更新会话的 `active_edit_run_id`；最终 `finish/manual_review` 时才把最终文档写入 `AgentSession.active_document_id`，并在存在复检时更新 `last_word_check_run_id`。
 
 #### 3.5.4 决策安全、终止条件与预算
 
@@ -560,12 +587,10 @@ output/pdf/
 #### 3.6.0 当前强条抽取代码树
 
 ```text
-frontend/src/
-├── App.tsx
-│   └── “强条抽取”模式、PDF 附件、SSE 请求、会话恢复和结果状态协调
-├── types.ts
-│   └── ClauseExtractionResult、ClauseItem、AgentTrace 等前端契约
-└── components/ResultPanel.tsx
+frontend-vue2/src/
+├── components/Workspace.vue
+│   └── “强条抽取”模式、PDF 附件、SSE 请求、访客会话恢复和结果状态协调
+└── components/ResultPanel.vue
     └── 强条数量、识别方法、warnings、条文列表和 Agent Loop Trace 展示
 
 backend/app/
@@ -582,9 +607,9 @@ backend/app/
 │       └── 强条工具注册、说明和统一 run_tool 调度
 ├── services/
 │   ├── clause_extraction.py
-│   │   └── ClauseExtractionRun 状态、缓存、三类证据合并、正文定位、验证和结果序列化
+│   │   └── ClauseExtractionRun 状态、缓存、三类证据合并、原生文字层/OCR 正文恢复、款级引用展开、正文定位、验证和结果序列化
 │   ├── pdf_vision.py
-│   │   └── PDF 渲染、前置页视觉分类、相对笔画筛行、候选行条号 OCR
+│   │   └── PDF 渲染、前置页视觉分类、公告条/款结构化读取、相对笔画筛行和候选行条号 OCR
 │   ├── knowledge_base.py
 │   │   └── LlamaParse 普通/高精度分页正文 OCR；强条任务只复用解析函数，不进入知识库
 │   └── session_memory.py
@@ -597,9 +622,9 @@ backend/app/
 
 backend/tests/
 ├── test_clause_extraction_agent.py
-│   └── Loop 动作约束、公告优先级、正文定位、跨页与页脚过滤
+│   └── Loop 动作约束、公告优先级、原生文字层、OCR 断行、款级展开、正文定位、跨页与页脚过滤
 └── test_pdf_vision.py
-    └── 视觉 JSON、粗体像素行筛选和缺页降级
+    └── 视觉 JSON、公告款级引用规范化、粗体像素行筛选和缺页降级
 ```
 
 ```text
@@ -620,7 +645,7 @@ backend/tests/
 
 | 识别结果 | 自动处理 |
 | --- | --- |
-| 公告直接列出强条条号 | 从公告页提取条号，再到全文定位对应条文正文；缺失条号进入人工复核 |
+| 公告直接列出强条条号 | 从公告页提取条号；出现“某条第 3、4 款”时展开成两个独立强制执行单元，再到全文逐项定位正文；缺失引用进入人工复核 |
 | 正文以黑体/粗体标识强条 | 原页渲染后按黑色笔画密度和内部笔画像素筛出相对粗体行，再由视觉模型只读取候选行开头条号；随后到 OCR 正文中定位完整条文 |
 | PDF 明确写“无强制性条文” | 记录为 `confirmed_none`，保留明确依据 |
 | 未发现任何强条证据 | 记录为 `none_detected`，回答只能说“未识别到”，不能断言一定没有强条 |
@@ -628,11 +653,13 @@ backend/tests/
 
 这是一个有数据库状态、Observation、LLM 单步决策、工具调用、验证和终止判断的真实 Agent Loop，但刻意保持精简。PDF 文本解析和条文定位是确定性工具，LLM 不负责凭空抽取正文；它只依据 `ClauseExtractionRun` 状态选择当前允许动作，并在完成后基于 `result_json` 汇总或回答追问。
 
-检查工具先用 PyMuPDF 将前 12 个物理页面分成有重叠的上、中、下区域，并要求视觉模型返回固定 JSON：公告列出的条号、黑体标识规则、明确无强条声明和短证据。若前置公告已经给出完整条号，或明确声明没有强条，工具立即停止扩扫；公告优先级高于同页出现的黑体说明，因此 534 页公告型样例只需检查前 12 页。没有权威前置结论时才扫描剩余页面。
+强条数量按“强制执行单元”计算，不只按主条号去重。整条强制时引用为 `1.0.3`；仅指定某款时内部引用为 `5.1.9#7`，用户界面显示为 `5.1.9 第7款`。例如公告中的“5.1.9 条第 7、8、9 款”会生成 3 条候选，每条分别带 `clause_no`、`item_no` 和 `reference`。因此一个公告即使只有 9 个主条号，也可能对应 12 个实际强条单元；验证、缺失列表、计数和最终回答都按这 12 个单元处理，不能再把同一主条号下的多款合并成一项。
+
+检查工具先用 PyMuPDF 将前 12 个物理页面分成有重叠的上、中、下区域，并要求视觉模型返回固定 JSON：公告主条号、按款展开的 `announcement_clause_refs`、黑体标识规则、明确无强条声明和短证据。若前置公告已经给出完整引用，或明确声明没有强条，工具立即停止扩扫；公告优先级高于同页出现的黑体说明，因此 534 页公告型样例只需检查前 12 页。没有权威前置结论时才扫描剩余页面。
 
 对于声明“黑体为强条”的 PDF，不把通用视觉模型的一次字体分类直接作为终值。系统以固定倍率渲染原页，屏蔽灰色水印，按页面普通正文的中位笔画特征动态计算阈值，筛出黑色笔画密度和内部笔画像素同时显著偏高的文本行；标题、表名等即使进入候选，视觉模型也只允许读取以完整规范条号开头的候选行。这样视觉模型负责文档类型判断和候选行 OCR，实际粗体判定来自原页像素，避免根据“必须、严禁、应、不得”措辞猜测，也避免一次模型调用的随机漏报/误报。
 
-LlamaParse 只负责恢复可检索正文。若普通文本层只有水印等低质量内容，系统对全部物理页执行高精度 OCR，但禁止 OCR 自行添加粗体语义；随后以已确认条号为准定位完整正文。正文定位从“总则”后的规范正文开始，在“条文说明”前结束，并支持条号 OCR 纠偏、跨页正文合并以及普通/圆点页码过滤。视觉调用失败、确认条号无法在正文定位、或 PDF 声明黑体规则但全文未确认到黑体条文时，任务带 warning 进入人工复核。
+正文恢复按成本从低到高降级：先使用已通过质量校验的历史分页缓存；否则调用 LlamaParse 普通解析；普通解析质量低时，先用 PyMuPDF 回查 PDF 自带的原生文字/OCR 层；原生文字仍不足才对全部物理页执行 LlamaParse 高精度 OCR。OCR 只恢复文字，禁止自行添加粗体语义；随后以已确认的条号或款级引用为准定位完整正文。正文定位从“总则”后的规范正文开始，在“条文说明”前结束，并支持被换行拆开的条号（如 `5.\n1.\n9`）、数字 OCR 纠偏、款序号拆分、跨页正文合并以及水印和普通/圆点页码过滤。视觉调用失败、确认引用无法在正文定位、或 PDF 声明黑体规则但全文未确认到黑体条文时，任务带 warning 进入人工复核。
 
 同一用户再次处理相同 `file_hash` 的 PDF 时，新的抽取算法版本可以复用历史 `parsed_pages_path`，避免仅因提示词或视觉算法升级而重新消耗数百页 OCR。复用前必须同时校验物理页数、非空页比例和总文本量；仅有 534 个空分页槽位不算有效缓存。命中有效缓存时记录 `body_cache` 和来源任务 ID，并视为正文已经完成验证，不再额外调用候选页高精度 OCR。若新 OCR 返回空内容或有效文本量不足，必须标记失败并进入复核，不能再把补齐后的空页面误判为成功。
 
@@ -643,13 +670,13 @@ LlamaParse 只负责恢复可检索正文。若普通文本层只有水印等低
 | 字段 | 含义 |
 | --- | --- |
 | `file_name/file_path/file_hash` | PDF 身份、存储位置和相同文件结果复用依据 |
-| `parsed_pages_path` | LlamaParse 分页 Markdown 的本地 JSON 缓存 |
+| `parsed_pages_path` | 当前最终采用的分页正文 JSON 缓存，内容可来自历史缓存、LlamaParse 或 PDF 原生文字层 |
 | `status/mandatory_status/error_message` | Loop 状态、强条判断和异常信息 |
-| `detection_methods` | `vision_announcement`、`vision_bold_rule`、`vision_bold_body`、`vision_explicit_none`、`vision_no_evidence`、`body_high_accuracy`、`body_cache`，以及文本降级识别方法 |
+| `detection_methods` | `vision_announcement`、`vision_bold_rule`、`vision_bold_body`、`vision_explicit_none`、`vision_no_evidence`、`body_native_text`、`body_high_accuracy`、`body_cache`，以及文本降级识别方法 |
 | `page_count/clause_count` | 解析页数和最终候选数 |
-| `result_json` | 标准信息、检查信号、条号、正文、页码、置信度、缺失条号和 warnings |
+| `result_json` | 标准信息、检查信号、条号/款号、`reference`、正文、页码、置信度、缺失引用和 warnings |
 | `decision_trace` | LLM 决策与工具 Observation 的完整审计轨迹 |
-| `parser_version/prompt_version` | 缓存复用和后续算法升级的版本边界 |
+| `parser_version/prompt_version` | 缓存复用和后续算法升级的版本边界；当前分别为 `12` 和 `2` |
 
 `AgentSession.active_clause_extraction_run_id` 只保存当前会话指针，日常 `messages` 仍只保存用户消息和最终回答。大体积的 `result_json` 不复制进消息历史，因此用户可以在同一会话中按条号或章节继续提问，同时避免每次重新解析整份 PDF。
 
@@ -722,7 +749,7 @@ LlamaParse 只负责恢复可检索正文。若普通文本层只有水印等低
 | 分组 | 主要接口 | 用途 |
 | --- | --- | --- |
 | 系统 | `GET /health` | 服务健康检查 |
-| 认证 | `POST /auth/register`、`POST /auth/login`、`GET /auth/me` | 注册、登录、当前用户 |
+| 访客身份 | 自动下发 `doc_agent_visitor` Cookie | 无需登录，隔离不同浏览器的业务记录 |
 | Agent | `POST /agent/check`、`POST /agent/check/stream` | 统一处理文档校核、强条抽取和知识问答；表单 `mode` 区分前端模式 |
 | 会话 | `GET/DELETE /agent/sessions...` | 会话列表、详情和删除 |
 | 运行记录 | `GET/DELETE /agent/runs...` | Agent Trace 列表、详情和删除 |
@@ -733,14 +760,14 @@ LlamaParse 只负责恢复可检索正文。若普通文本层只有水印等低
 | 模板 | `/templates`、`/templates/upload` | 模板上传、列表、详情和删除 |
 | 知识库 | `/knowledge/documents`、`/knowledge/query` | RAG 文件管理和问答 |
 
-除健康检查、注册和登录外，业务接口都要求 JWT Bearer Token。
+Agent 与 Word 接口会自动使用访客 Cookie 过滤数据；知识库、模板和 Excel 接口维护全局共享资料。系统不再使用 Bearer Token。
 
 ## 6. 已完成功能状态
 
 | 功能 | 状态 | 说明 |
 | --- | --- | --- |
-| 用户注册与登录 | 已完成 | Argon2 + JWT |
-| 会话列表、新建、继续和删除 | 已完成 | 按用户隔离 |
+| 匿名访客身份 | 已完成 | 签名 HttpOnly Cookie，默认保留 90 天，无需登录注册 |
+| 会话列表、新建、继续和删除 | 已完成 | 按浏览器访客隔离，刷新后恢复 |
 | 会话上下文与摘要 | 已完成 | JSONB 消息 + 阶段摘要 |
 | Agent Planner/Tools/Final Answer | 已完成 | 工具注册表驱动 |
 | Agent 流式输出 | 已完成 | SSE 输出到前端 |
@@ -757,9 +784,10 @@ LlamaParse 只负责恢复可检索正文。若普通文本层只有水印等低
 | 关键词/向量混合检索 | 已完成 | 固定 0.6/0.4 |
 | 带引用的知识回答 | 已完成 | 回答和来源一起返回 |
 | RAG 冒烟评测脚本 | 已完成 | 仅示例集，不是正式业务评测 |
-| Chat 风格前端 | 已完成 | 登录、会话、聊天、设置、结果面板 |
+| Vue 2.7 公共工作台 | 已完成 | 无登录、会话历史、三模式、附件、停止生成和结果面板；生产构建通过 |
+| Vue 2.7 资料管理页 | 已完成 | 独立 5175 页面，只包含知识库、Word 模板和 Excel 标准库；生产构建通过 |
 | Word 自动修改 | 已完成 | 外层 Agent Loop、单条 WordEditRun、累积 changes 记忆、细粒度工具调用、精确写回和轨迹持久化 |
-| PDF 强条自动识别与抽取 | 已完成 | 单条 ClauseExtractionRun、三类证据自动判断、检查/抽取/验证 Agent Loop、结果缓存和人工复核闭环 |
+| PDF 强条自动识别与抽取 | 已完成 | 单条 ClauseExtractionRun、三类证据自动判断、原生文字层/OCR 多级正文恢复、条与款级强制单元展开、检查/抽取/验证 Agent Loop、结果缓存和人工复核闭环 |
 | 统一三模式对话框 | 已完成 | 文档校核、强条抽取和知识问答共用会话、SSE、输入区和历史列表 |
 | 对话输入与结果面板交互 | 已完成 | 结果概览固定且列表独立滚动；紧凑附件卡、加号上传、上箭头发送、IME 组词保护、附件直发和同键停止已落地 |
 | 统一用户回答排版 | 已完成 | 校核、完整性、RAG 和强条总结共用无表格的稳定 Markdown 规范；内部 Agent JSON 不受影响 |
@@ -767,15 +795,17 @@ LlamaParse 只负责恢复可检索正文。若普通文本层只有水印等低
 
 ## 7. 当前边界与待补齐项
 
-1. 用户会话和 Agent 运行记录已严格按用户过滤；知识库、Word 模板和 Excel 标准库当前是登录用户共享的公共资料库。
-2. Word 文档已有 `owner_user_id`，但部分直接资源接口仍需要补齐所有权查询条件。
+1. 会话、文档、检查、Word 修改和强条抽取任务按匿名访客过滤；知识库、Word 模板和 Excel 标准库是全局共享资料。
+2. 清除 Cookie、使用另一浏览器或更换设备会获得新的访客身份，旧会话仍在数据库中但无法通过新 Cookie 找回。
 3. RAG 当前只能通过示例问题验证流程，尚不能说明真实业务命中率和回答准确率。
-4. Word 修改核心已有状态机和精确写回自动化测试；一致性、完整性、RAG、认证和会话等模块的自动化回归覆盖仍不足。
+4. Word 修改核心已有状态机和精确写回自动化测试；一致性、完整性、RAG 和会话等模块的自动化回归覆盖仍不足。
 5. 自动修改当前只处理一致性检查的警告和高风险问题；完整性提醒、提示问题和人工确认式差异预览暂不自动修改。
 6. Word Loop 的数据库状态、累计 `changes` 和 `decision_trace` 可以持久化审计，但 `latest_observation` 仍是进程内变量，服务中断后暂不支持自动断点续跑。
-7. 强条版式识别依赖已配置的百炼视觉模型，正文恢复依赖 LlamaParse；视觉调用失败、条号无法定位或 OCR 质量过低时会进入人工复核。它不会自动把抽取结果写进 Excel 标准库。
+7. 强条版式识别依赖已配置的百炼视觉模型；正文优先复用缓存和 PDF 原生文字层，必要时再依赖 LlamaParse。视觉调用失败、条/款引用无法定位或 OCR 质量过低时会进入人工复核。它不会自动把抽取结果写进 Excel 标准库。
 8. 强条抽取会按文件哈希和解析/提示词版本复用已完成结果；算法升级时需同步提升版本号，避免读取旧缓存。
-9. `frontend/dist/`、上传文件、强条分页缓存、Milvus 数据和 Python 缓存属于运行产物，不应作为主要代码阅读对象。
+9. 两个前端的 `dist/`、上传文件、强条分页缓存、Milvus 数据和 Python 缓存属于运行产物，不应作为主要代码阅读对象。
+10. 资料管理页当前只依赖网址入口隔离，知道 5175 地址或后端管理接口的人也能维护资料；这是已确认的低安全需求边界。
+11. Vue 2 已停止官方维护；当前使用最终版 Vue 2.7.16 是既定技术要求，构建链依赖的安全告警需在生产部署前评估。
 
 ## 8. 后续目标
 
@@ -803,8 +833,8 @@ LlamaParse 只负责恢复可检索正文。若普通文本层只有水印等低
 
 ### 8.3 后续工程化目标
 
-1. 补齐所有资源接口的用户所有权校验。
-2. 为一致性、完整性、RAG、认证和会话记忆增加自动化测试。
+1. 根据使用量补充匿名访客数据过期清理策略。
+2. 为一致性、完整性、RAG 和会话记忆增加自动化测试。
 3. 增加报告导出、日志、监控和数据库备份。
 4. 完成公网部署、HTTPS、生产环境密钥和上传大小限制。
 5. 根据实际团队需求决定知识库继续共享，还是增加公共库与个人库两层权限。
@@ -827,8 +857,10 @@ LlamaParse 只负责恢复可检索正文。若普通文本层只有水印等低
 12. `backend/app/services/template_ingest.py`、`key_section_diff.py` 与 `completeness_check.py`：看模板入库、三个关键章节文本 Diff 和完整性检查。
 13. `backend/app/services/knowledge_base.py`、`keyword_embedding.py`、`embedding_qwen.py`、`knowledge_store.py`：看 RAG 全链路。
 14. `backend/app/llm.py` 与各业务回答提示词：看统一用户回答排版如何与领域规则组合。
-15. `frontend/src/App.tsx`：看三种前端模式如何复用会话和流式接口。
-16. `frontend/src/components/`：按侧边栏、统一对话区、结果面板、轻量 Markdown 渲染和设置面板分别阅读。
+15. `backend/app/visitor.py`：看匿名 Cookie 如何映射为内部访客 ID。
+16. `frontend-vue2/src/App.vue` 与 `Workspace.vue`：看公共工作台如何复用访客会话、三种模式和流式接口。
+17. `frontend-vue2/src/components/`：按侧边栏、统一对话区、结果面板和安全 Markdown 渲染分别阅读。
+18. `frontend-admin-vue2/src/App.vue`：看三个共享资料模块如何独立维护。
 
 ## 10. 文档维护原则
 

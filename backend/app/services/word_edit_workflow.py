@@ -28,7 +28,7 @@ def start_word_edit_run(
         if session_id is not None:
             agent_session = get_owned_agent_session(session, session_id, owner_user_id)
             if not agent_session:
-                raise ValueError("Agent 会话不存在或不属于当前用户")
+                raise ValueError("Agent 会话不存在或不属于当前访客")
         edit_run = WordEditRun(
             owner_user_id=owner_user_id,
             session_id=session_id,
@@ -70,7 +70,9 @@ def inspect_consistency_issues(*, edit_run_id: int, owner_user_id: int) -> dict[
             )
         inspection_run = CheckRun(
             owner_user_id=owner_user_id,
+            session_id=edit_run.session_id,
             document_id=document_id,
+            run_type="word_check",
             user_message="Word Agent Loop 初始一致性检查",
             tool_plan={"steps": [{"tool": "inspect_consistency_issues_tool", "args": {"edit_run_id": edit_run_id}}]},
             tool_results=[{"tool": "word_check_tool", "result": inspection}],
@@ -281,7 +283,9 @@ def verify_word_edit(*, edit_run_id: int, owner_user_id: int) -> dict[str, objec
         require_status(edit_run, "verifying")
         verification_run = CheckRun(
             owner_user_id=owner_user_id,
+            session_id=edit_run.session_id,
             document_id=output_document.id,
+            run_type="word_check",
             user_message="Word Agent Loop 修订后复检",
             tool_plan={"steps": [{"tool": "verify_word_edit_tool", "args": {"edit_run_id": edit_run.id}}]},
             tool_results=[{"tool": "word_check_tool", "result": verification}],
@@ -437,7 +441,7 @@ def finalize_word_edit_run(
                 agent_session.active_document_id = final_document_id
                 agent_session.active_edit_run_id = edit_run.id
                 if edit_run.verification_run_id:
-                    agent_session.last_check_run_id = edit_run.verification_run_id
+                    agent_session.last_word_check_run_id = edit_run.verification_run_id
 
         trace = list(edit_run.decision_trace or [])
         session.commit()
@@ -595,12 +599,13 @@ def latest_check_run_id(
 ) -> int | None:
     if session_id:
         agent_session = get_owned_agent_session(session, session_id, owner_user_id)
-        if agent_session and agent_session.last_check_run_id:
-            check_run = session.get(CheckRun, agent_session.last_check_run_id)
+        if agent_session and agent_session.last_word_check_run_id:
+            check_run = session.get(CheckRun, agent_session.last_word_check_run_id)
             if (
                 check_run
                 and check_run.owner_user_id == owner_user_id
                 and check_run.document_id == document_id
+                and check_run.run_type == "word_check"
             ):
                 return check_run.id
     run = (
@@ -608,6 +613,7 @@ def latest_check_run_id(
         .filter(
             CheckRun.document_id == document_id,
             CheckRun.owner_user_id == owner_user_id,
+            CheckRun.run_type == "word_check",
             CheckRun.status.in_(["success", "completed"]),
         )
         .order_by(CheckRun.id.desc())
@@ -619,7 +625,7 @@ def latest_check_run_id(
 def get_owned_document(session, document_id: int, owner_user_id: int) -> WordDocument:
     document = session.get(WordDocument, document_id)
     if not document or document.owner_user_id != owner_user_id:
-        raise ValueError("文档不存在或不属于当前用户")
+        raise ValueError("文档不存在或不属于当前访客")
     return document
 
 
@@ -638,7 +644,7 @@ def get_owned_edit_run(
         query = query.with_for_update()
     edit_run = query.first()
     if not edit_run:
-        raise ValueError("Word 修订任务不存在或不属于当前用户")
+        raise ValueError("Word 修订任务不存在或不属于当前访客")
     return edit_run
 
 

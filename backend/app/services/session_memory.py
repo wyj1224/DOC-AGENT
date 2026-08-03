@@ -62,6 +62,7 @@ def append_turn(
     user_message: str,
     assistant_message: str,
     run_id: int,
+    run_type: str,
     document_id: int | None,
     clause_extraction_run_id: int | None = None,
 ) -> None:
@@ -92,8 +93,8 @@ def append_turn(
         if clause_extraction_run_id:
             agent_session.active_clause_extraction_run_id = clause_extraction_run_id
         agent_session.last_run_id = run_id
-        if document_id:
-            agent_session.last_check_run_id = run_id
+        if run_type == "word_check":
+            agent_session.last_word_check_run_id = run_id
         database.commit()
 
     summarize_if_needed(owner_user_id, session_id)

@@ -3,6 +3,8 @@ import json
 import re
 from pathlib import Path
 
+import fitz
+
 from app.config import BACKEND_ROOT
 from app.db.database import SessionLocal
 from app.db.models import AgentSession, ClauseExtractionRun
@@ -15,8 +17,8 @@ from app.services.pdf_vision import (
 )
 
 
-PARSER_VERSION = "10"
-PROMPT_VERSION = "1"
+PARSER_VERSION = "12"
+PROMPT_VERSION = "2"
 TERMINAL_STATUSES = ("completed", "manual_review", "failed")
 CLAUSE_NO_SOURCE = r"\d{1,2}(?:[.．。]\d{1,2}){1,3}"
 CLAUSE_NO_PATTERN = re.compile(rf"(?<!\d)({CLAUSE_NO_SOURCE})(?!\d)")
@@ -31,6 +33,11 @@ CLAUSE_LINE_PATTERN = re.compile(
 ANNOUNCEMENT_PATTERN = re.compile(
     r"其中[，,]?\s*第(?P<clause_list>.+?)条为强制性条文", re.DOTALL
 )
+ANNOUNCEMENT_REF_PATTERN = re.compile(
+    rf"(?P<clause>{CLAUSE_NO_SOURCE})(?:条)?"
+    r"(?:第(?P<items>\d{1,2}(?:[,，、]\d{1,2})*)款)?"
+)
+ITEM_LINE_PATTERN = re.compile(r"^\s*(?P<item>\d{1,2})\s*[.、]\s*(?P<text>.*)$")
 VISION_PREVIEW_PAGE_COUNT = 12
 BODY_OCR_PROMPT = (
     "请只做高精度文字 OCR，逐页完整保留规范正文、条号、数字、单位、标点、表格和分页内容。"
@@ -148,28 +155,38 @@ def inspect_clause_pdf(*, extraction_run_id: int, owner_user_id: int) -> dict[st
         if "body_cache" not in signals["detection_methods"]:
             signals["detection_methods"].append("body_cache")
     elif signals.get("parse_quality") == "low":
-        try:
-            ocr_pages = parse_document(
-                source_path,
-                target_page_indexes=list(range(total_page_count)),
-                high_accuracy=True,
-                user_prompt=BODY_OCR_PROMPT,
-                preserve_empty_pages=True,
-            )
-            candidate_pages = align_pages(ocr_pages, total_page_count)
-            text_signals = detect_clause_signals(
-                candidate_pages, display_file_name(source_path.name)
-            )
-            if text_signals.get("parse_quality") == "low":
-                raise ValueError("高精度正文 OCR 返回空内容或有效文本量不足")
-            pages = candidate_pages
-            signals = merge_visual_signals(text_signals, visual)
-            signals["body_high_accuracy_all"] = True
-            if "body_high_accuracy" not in signals["detection_methods"]:
-                signals["detection_methods"].append("body_high_accuracy")
-        except Exception as exc:
-            signals["body_high_accuracy_all"] = False
-            signals["body_ocr_error"] = str(exc)
+        native_pages = extract_native_pdf_pages(source_path, total_page_count)
+        native_signals = detect_clause_signals(
+            native_pages, display_file_name(source_path.name)
+        )
+        if native_signals.get("parse_quality") != "low":
+            pages = native_pages
+            signals = merge_visual_signals(native_signals, visual)
+            signals["body_native_text"] = True
+            signals["detection_methods"].append("body_native_text")
+        else:
+            try:
+                ocr_pages = parse_document(
+                    source_path,
+                    target_page_indexes=list(range(total_page_count)),
+                    high_accuracy=True,
+                    user_prompt=BODY_OCR_PROMPT,
+                    preserve_empty_pages=True,
+                )
+                candidate_pages = align_pages(ocr_pages, total_page_count)
+                text_signals = detect_clause_signals(
+                    candidate_pages, display_file_name(source_path.name)
+                )
+                if text_signals.get("parse_quality") == "low":
+                    raise ValueError("高精度正文 OCR 返回空内容或有效文本量不足")
+                pages = candidate_pages
+                signals = merge_visual_signals(text_signals, visual)
+                signals["body_high_accuracy_all"] = True
+                if "body_high_accuracy" not in signals["detection_methods"]:
+                    signals["detection_methods"].append("body_high_accuracy")
+            except Exception as exc:
+                signals["body_high_accuracy_all"] = False
+                signals["body_ocr_error"] = str(exc)
     parsed_path = save_parsed_pages(extraction_run_id, pages)
 
     with SessionLocal() as session:
@@ -207,24 +224,37 @@ def extract_clause_candidates(*, extraction_run_id: int, owner_user_id: int) -> 
     pages = load_parsed_pages(parsed_pages_path)
     inspection = dict(result.get("inspection") or {})
     listed_clause_nos = [normalize_clause_no(value) for value in inspection.get("listed_clause_nos") or []]
+    listed_clause_refs = normalize_clause_references(
+        list(inspection.get("listed_clause_refs") or []) or listed_clause_nos
+    )
     visual_bold_clause_nos = [
         normalize_clause_no(value)
         for value in inspection.get("visual_bold_clause_nos") or []
     ]
-    evidence_clause_nos = list(
-        dict.fromkeys([*listed_clause_nos, *visual_bold_clause_nos])
+    listed_main_nos = {item["clause_no"] for item in listed_clause_refs}
+    evidence_refs = normalize_clause_references(
+        [
+            *listed_clause_refs,
+            *(
+                {"clause_no": clause_no, "item_no": ""}
+                for clause_no in visual_bold_clause_nos
+                if clause_no not in listed_main_nos
+            ),
+        ]
     )
     candidates = extract_candidates_from_pages(
         pages,
         listed_clause_nos=listed_clause_nos,
+        listed_clause_refs=listed_clause_refs,
         visual_bold_clause_nos=visual_bold_clause_nos,
     )
-    if evidence_clause_nos and (
+    if evidence_refs and (
         inspection.get("body_high_accuracy_all")
+        or inspection.get("body_native_text")
         or inspection.get("body_pages_reused")
     ):
         inspection["body_refined"] = True
-    elif evidence_clause_nos:
+    elif evidence_refs:
         target_page_nos = {int(item["page_no"]) for item in candidates}
         bold_clause_pages = dict(inspection.get("bold_clause_pages") or {})
         target_page_nos.update(
@@ -268,16 +298,19 @@ def extract_clause_candidates(*, extraction_run_id: int, owner_user_id: int) -> 
             refined_candidates = extract_candidates_from_pages(
                 pages,
                 listed_clause_nos=listed_clause_nos,
+                listed_clause_refs=listed_clause_refs,
                 visual_bold_clause_nos=visual_bold_clause_nos,
             )
-            refined_by_no = {
-                str(item["clause_no"]): item for item in refined_candidates
+            refined_by_ref = {
+                candidate_reference_key(item): item for item in refined_candidates
             }
-            existing_by_no = {str(item["clause_no"]): item for item in candidates}
+            existing_by_ref = {
+                candidate_reference_key(item): item for item in candidates
+            }
             candidates = [
-                refined_by_no.get(clause_no, existing_by_no.get(clause_no))
-                for clause_no in evidence_clause_nos
-                if refined_by_no.get(clause_no, existing_by_no.get(clause_no))
+                refined_by_ref.get(reference_key(reference), existing_by_ref.get(reference_key(reference)))
+                for reference in evidence_refs
+                if refined_by_ref.get(reference_key(reference), existing_by_ref.get(reference_key(reference)))
             ]
             inspection["body_refined"] = True
             inspection["body_refined_page_count"] = len(
@@ -288,8 +321,12 @@ def extract_clause_candidates(*, extraction_run_id: int, owner_user_id: int) -> 
         except Exception as exc:
             inspection["body_refined"] = False
             inspection["body_refinement_error"] = str(exc)
-    found_nos = {str(item["clause_no"]) for item in candidates}
-    missing = [value for value in evidence_clause_nos if value not in found_nos]
+    found_refs = {candidate_reference_key(item) for item in candidates}
+    missing = [
+        reference_label(reference)
+        for reference in evidence_refs
+        if reference_key(reference) not in found_refs
+    ]
 
     result["clauses"] = candidates
     result["missing_clause_nos"] = missing
@@ -453,6 +490,7 @@ def answer_clause_extraction_question(
 4. 每条结论尽量标注 PDF 页码；有 warning 时明确提示人工复核。
 5. 只能描述当前任务结果，不得沿用会话中旧任务的条数、缺失项或错误结论。
 6. vision_bold_rule 只表示 PDF 声明“黑体为强条”；只有 vision_bold_body 才表示视觉模型在正文页确认了粗体条文。
+7. 条文含 reference 时必须按 reference 逐项列出，不得把同一主条号下的多款合并。
 
 {USER_REPORT_FORMAT_RULES}
 
@@ -523,6 +561,7 @@ def aggregate_visual_evidence(
     visual_pages: list[dict[str, object]],
 ) -> dict[str, object]:
     listed_clause_nos: list[str] = []
+    listed_clause_refs: list[dict[str, str]] = []
     bold_clause_nos: list[str] = []
     announcement_pages: list[int] = []
     bold_rule_pages: list[int] = []
@@ -535,6 +574,13 @@ def aggregate_visual_evidence(
             normalize_clause_no(str(value))
             for value in list(page.get("announcement_clause_nos") or [])
         ]
+        page_refs = normalize_clause_references(
+            list(page.get("announcement_clause_refs") or [])
+        )
+        for reference in page_refs:
+            clause_no = reference["clause_no"]
+            if clause_no not in page_listed:
+                page_listed.append(clause_no)
         page_bold = [
             normalize_clause_no(str(value))
             for value in list(page.get("bold_clause_nos") or [])
@@ -548,6 +594,11 @@ def aggregate_visual_evidence(
         for clause_no in page_listed:
             if clause_no not in listed_clause_nos:
                 listed_clause_nos.append(clause_no)
+        for reference in page_refs:
+            if reference_key(reference) not in {
+                reference_key(item) for item in listed_clause_refs
+            }:
+                listed_clause_refs.append(reference)
         for clause_no in page_bold:
             if clause_no not in bold_clause_nos:
                 bold_clause_nos.append(clause_no)
@@ -564,6 +615,7 @@ def aggregate_visual_evidence(
         methods.append("vision_explicit_none")
     return {
         "listed_clause_nos": sorted(listed_clause_nos, key=clause_sort_key),
+        "listed_clause_refs": sorted(listed_clause_refs, key=reference_sort_key),
         "visual_bold_clause_nos": sorted(bold_clause_nos, key=clause_sort_key),
         "announcement_pages": sorted(set(announcement_pages)),
         "bold_rule_pages": sorted(set(bold_rule_pages)),
@@ -581,6 +633,17 @@ def merge_visual_signals(
     if visual_listed:
         signals["listed_clause_nos"] = visual_listed
         signals["announcement_pages"] = list(visual.get("announcement_pages") or [])
+    listed_refs = normalize_clause_references(
+        list(signals.get("listed_clause_refs") or [])
+        + list(visual.get("listed_clause_refs") or [])
+    )
+    referenced_clause_nos = {item["clause_no"] for item in listed_refs}
+    listed_refs.extend(
+        {"clause_no": normalize_clause_no(value), "item_no": ""}
+        for value in signals.get("listed_clause_nos") or []
+        if normalize_clause_no(value) not in referenced_clause_nos
+    )
+    signals["listed_clause_refs"] = sorted(listed_refs, key=reference_sort_key)
     visual_bold_nos = list(visual.get("visual_bold_clause_nos") or [])
     signals["visual_bold_clause_nos"] = visual_bold_nos
     signals["bold_clause_pages"] = dict(visual.get("bold_clause_pages") or {})
@@ -632,16 +695,33 @@ def align_pages(pages: list[str], expected_count: int) -> list[str]:
     return aligned
 
 
+def extract_native_pdf_pages(path: Path, expected_count: int) -> list[str]:
+    with fitz.open(path) as document:
+        pages = [page.get_text("text").strip() for page in document]
+    return align_pages(pages, expected_count)
+
+
 def detect_clause_signals(pages: list[str], file_name: str) -> dict[str, object]:
     announcement_pages: list[int] = []
     bold_rule_pages: list[int] = []
     explicit_none_pages: list[int] = []
     listed_clause_nos: list[str] = []
+    listed_clause_refs: list[dict[str, str]] = []
     for page_no, text in enumerate(pages, start=1):
         compact = " ".join(text.split())
+        page_refs = extract_announcement_references(text)
+        if page_refs:
+            announcement_pages.append(page_no)
+            listed_clause_refs = normalize_clause_references(
+                [*listed_clause_refs, *page_refs]
+            )
+            for reference in page_refs:
+                if reference["clause_no"] not in listed_clause_nos:
+                    listed_clause_nos.append(reference["clause_no"])
         announcement = ANNOUNCEMENT_PATTERN.search(text)
         if announcement:
-            announcement_pages.append(page_no)
+            if page_no not in announcement_pages:
+                announcement_pages.append(page_no)
             for clause_no in extract_clause_numbers(announcement.group("clause_list")):
                 normalized = normalize_clause_no(clause_no)
                 if normalized not in listed_clause_nos:
@@ -675,6 +755,7 @@ def detect_clause_signals(pages: list[str], file_name: str) -> dict[str, object]
         "standard_name": standard_name_match.group(1).strip() if standard_name_match else "",
         "detection_methods": methods,
         "listed_clause_nos": listed_clause_nos,
+        "listed_clause_refs": listed_clause_refs,
         "announcement_pages": announcement_pages,
         "bold_rule_pages": bold_rule_pages,
         "explicit_none_pages": explicit_none_pages,
@@ -690,12 +771,18 @@ def extract_candidates_from_pages(
     pages: list[str],
     *,
     listed_clause_nos: list[str],
+    listed_clause_refs: list[dict[str, str]] | None = None,
     visual_bold_clause_nos: list[str] | None = None,
 ) -> list[dict[str, object]]:
     candidates: dict[str, dict[str, object]] = {}
     blocks = extract_clause_blocks(pages)
     visual_bold = set(visual_bold_clause_nos or [])
-    for clause_no in listed_clause_nos:
+    references = normalize_clause_references(
+        list(listed_clause_refs or []) or listed_clause_nos
+    )
+    for reference in references:
+        clause_no = reference["clause_no"]
+        item_no = reference.get("item_no") or ""
         block = blocks.get(clause_no)
         recovered = False
         if not block:
@@ -704,11 +791,15 @@ def extract_candidates_from_pages(
             if fallback and looks_like_normative_clause(str(fallback.get("clause_text") or "")):
                 block = fallback
                 recovered = True
+        if block and item_no:
+            block = dict(block.get("_items", {}).get(item_no) or {})
         if block:
             from_vision = clause_no in visual_bold
-            candidates[clause_no] = {
-                **block,
+            candidate = {
+                **{key: value for key, value in block.items() if key != "_items"},
                 "clause_no": clause_no,
+                "item_no": item_no,
+                "reference": reference_label(reference),
                 "evidence_type": (
                     "announcement_and_body_ocr_recovered"
                     if recovered
@@ -720,30 +811,39 @@ def extract_candidates_from_pages(
                 ),
                 "confidence": 0.9 if recovered else 0.98,
             }
+            candidates[reference_key(reference)] = candidate
 
     for clause_no in visual_bold:
         block = blocks.get(clause_no)
         if not block:
             continue
-        if clause_no in candidates:
-            candidates[clause_no]["evidence_type"] = "announcement_and_bold_body"
-            candidates[clause_no]["confidence"] = 0.99
+        matching = [
+            item for item in candidates.values() if item["clause_no"] == clause_no
+        ]
+        if matching:
+            for item in matching:
+                item["evidence_type"] = "announcement_and_bold_body"
+                item["confidence"] = 0.99
         else:
-            candidates[clause_no] = {
-                **block,
+            reference = {"clause_no": clause_no, "item_no": ""}
+            candidates[reference_key(reference)] = {
+                **{key: value for key, value in block.items() if key != "_items"},
+                "item_no": "",
+                "reference": clause_no,
                 "evidence_type": "vision_bold_body_and_ocr",
                 "confidence": 0.96,
             }
-    return sorted(candidates.values(), key=lambda item: clause_sort_key(str(item["clause_no"])))
+    return sorted(candidates.values(), key=candidate_sort_key)
 
 
 def extract_clause_blocks(pages: list[str]) -> dict[str, dict[str, object]]:
     blocks: dict[str, dict[str, object]] = {}
     start_index, end_index = normative_body_range(pages)
     current_no = ""
-    current_lines: list[str] = []
+    current_lines: list[tuple[int, str]] = []
     current_page_no = 0
     for page_no, page in enumerate(pages[start_index:end_index], start=start_index + 1):
+        page = normalize_split_clause_numbers(page)
         for raw_line in page.splitlines():
             line = raw_line.strip()
             match = CLAUSE_LINE_PATTERN.match(line)
@@ -751,7 +851,7 @@ def extract_clause_blocks(pages: list[str]) -> dict[str, dict[str, object]]:
                 if current_no:
                     save_clause_block(blocks, current_no, current_lines, current_page_no)
                 current_no = normalize_clause_no(match.group(1))
-                current_lines = [match.group(2).strip(" *_#")]
+                current_lines = [(page_no, match.group(2).strip(" *_#"))]
                 current_page_no = page_no
             elif current_no:
                 if line.startswith("#"):
@@ -760,27 +860,41 @@ def extract_clause_blocks(pages: list[str]) -> dict[str, dict[str, object]]:
                     current_lines = []
                     current_page_no = 0
                 elif line:
-                    current_lines.append(line.strip(" *_"))
+                    current_lines.append((page_no, line.strip(" *_")))
     if current_no:
         save_clause_block(blocks, current_no, current_lines, current_page_no)
     return blocks
 
 
+def normalize_split_clause_numbers(value: str) -> str:
+    pattern = re.compile(
+        rf"(?m)^(\s*{OCR_DIGIT_SOURCE}{{1,2}}(?:\s*[.．。]\s*{OCR_DIGIT_SOURCE}{{1,2}})*\s*[.．。])"
+        rf"\s*\n\s*({OCR_DIGIT_SOURCE}{{1,2}})(?=\s*(?:[.．。]|\s))"
+    )
+    while True:
+        normalized = pattern.sub(r"\1\2", value)
+        if normalized == value:
+            return value
+        value = normalized
+
+
 def save_clause_block(
     blocks: dict[str, dict[str, object]],
     clause_no: str,
-    lines: list[str],
+    lines: list[tuple[int, str]],
     page_no: int,
 ) -> None:
     useful_lines = [
-        value
-        for value in lines
+        (line_page, value)
+        for line_page, value in lines
         if value
         and not re.fullmatch(
             r"(?:[•·]\s*)?\d{1,3}(?:\s*[•·])?", value.strip()
         )
+        and "移动通信集团设计院有限公司" not in value
+        and not re.fullmatch(r"\d{4}-\d{2}-\d{2}.*", value.strip())
     ]
-    text = " ".join(useful_lines).replace("**", "").strip()
+    text = " ".join(value for _, value in useful_lines).replace("**", "").strip()
     if len(text) < 4:
         return
     if clause_no in blocks:
@@ -793,7 +907,36 @@ def save_clause_block(
         "clause_no": clause_no,
         "clause_text": text[:6000],
         "page_no": page_no,
+        "_items": extract_numbered_items(useful_lines),
     }
+
+
+def extract_numbered_items(
+    lines: list[tuple[int, str]],
+) -> dict[str, dict[str, object]]:
+    items: dict[str, dict[str, object]] = {}
+    current_no = ""
+    current_page = 0
+    parts: list[str] = []
+    for page_no, line in lines:
+        match = ITEM_LINE_PATTERN.match(line)
+        if match:
+            if current_no and parts:
+                items[current_no] = {
+                    "page_no": current_page,
+                    "clause_text": " ".join(parts).strip()[:6000],
+                }
+            current_no = match.group("item")
+            current_page = page_no
+            parts = [match.group("text").strip()]
+        elif current_no:
+            parts.append(line)
+    if current_no and parts:
+        items[current_no] = {
+            "page_no": current_page,
+            "clause_text": " ".join(parts).strip()[:6000],
+        }
+    return items
 
 
 def looks_like_normative_clause(value: str) -> bool:
@@ -827,8 +970,15 @@ def select_clauses_for_question(
     clauses: list[dict[str, object]], question: str
 ) -> list[dict[str, object]]:
     requested = {normalize_clause_no(value) for value in CLAUSE_NO_PATTERN.findall(question)}
+    requested_item = re.search(r"第\s*(\d{1,2})\s*款", question)
     if requested:
         selected = [item for item in clauses if str(item.get("clause_no")) in requested]
+        if requested_item:
+            selected = [
+                item
+                for item in selected
+                if str(item.get("item_no") or "") == requested_item.group(1)
+            ]
     else:
         chapter_match = re.search(r"第\s*(\d{1,2})\s*章", question)
         if chapter_match:
@@ -852,7 +1002,11 @@ def inspection_result(extraction_run: ClauseExtractionRun) -> dict[str, object]:
         "file_name": extraction_run.file_name,
         "page_count": extraction_run.page_count,
         "detection_methods": list(extraction_run.detection_methods or []),
-        "listed_clause_count": len(inspection.get("listed_clause_nos") or []),
+        "listed_clause_count": len(
+            inspection.get("listed_clause_refs")
+            or inspection.get("listed_clause_nos")
+            or []
+        ),
         "bold_candidate_count": int(inspection.get("bold_candidate_count") or 0),
         "parse_quality": inspection.get("parse_quality"),
         "status": extraction_run.status,
@@ -891,7 +1045,11 @@ def clause_extraction_state_dict(extraction_run: ClauseExtractionRun) -> dict[st
         "detection_methods": list(extraction_run.detection_methods or []),
         "page_count": extraction_run.page_count,
         "clause_count": extraction_run.clause_count,
-        "listed_clause_count": len(inspection.get("listed_clause_nos") or []),
+        "listed_clause_count": len(
+            inspection.get("listed_clause_refs")
+            or inspection.get("listed_clause_nos")
+            or []
+        ),
         "missing_clause_count": len(result.get("missing_clause_nos") or []),
         "requires_review": bool(result.get("requires_review")),
         "error_message": extraction_run.error_message,
@@ -1007,7 +1165,7 @@ def get_owned_run(
         query = query.with_for_update()
     extraction_run = query.first()
     if not extraction_run:
-        raise ValueError("强条抽取任务不存在或不属于当前用户")
+        raise ValueError("强条抽取任务不存在或不属于当前访客")
     return extraction_run
 
 
@@ -1022,7 +1180,7 @@ def get_owned_agent_session(
         .first()
     )
     if not agent_session:
-        raise ValueError("Agent 会话不存在或不属于当前用户")
+        raise ValueError("Agent 会话不存在或不属于当前访客")
     return agent_session
 
 
@@ -1036,6 +1194,78 @@ def require_status(extraction_run: ClauseExtractionRun, *allowed: str) -> None:
 def normalize_clause_no(value: str) -> str:
     clean = re.sub(r"\s+", "", value).replace("．", ".").replace("。", ".")
     return clean.translate(str.maketrans({"O": "0", "I": "1", "l": "1", "J": "1"}))
+
+
+def normalize_clause_references(values: list[object]) -> list[dict[str, str]]:
+    output: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for value in values:
+        if isinstance(value, dict):
+            clause_no = normalize_clause_no(str(value.get("clause_no") or ""))
+            item_no = str(value.get("item_no") or "").strip()
+        else:
+            clause_no, _, item_no = str(value).partition("#")
+            clause_no = normalize_clause_no(clause_no)
+        reference = {"clause_no": clause_no, "item_no": item_no}
+        key = reference_key(reference)
+        if clause_no and key not in seen:
+            output.append(reference)
+            seen.add(key)
+    return output
+
+
+def extract_announcement_references(value: str) -> list[dict[str, str]]:
+    compact = re.sub(r"\s+", "", value)
+    output: list[dict[str, str]] = []
+    for end in re.finditer(r"为强制性条文", compact):
+        prefix = compact[: end.start()]
+        start = max(
+            prefix.rfind("其中"),
+            prefix.rfind("黑体字标注的"),
+            prefix.rfind("粗体字标注的"),
+        )
+        segment = prefix[start if start >= 0 else max(0, len(prefix) - 600) :]
+        for match in ANNOUNCEMENT_REF_PATTERN.finditer(segment):
+            clause_no = normalize_clause_no(match.group("clause"))
+            items = re.split(r"[,，、]", match.group("items") or "")
+            output.extend(
+                {"clause_no": clause_no, "item_no": item_no}
+                for item_no in (items or [""])
+                if item_no or not match.group("items")
+            )
+    return normalize_clause_references(output)
+
+
+def reference_key(reference: dict[str, str]) -> str:
+    return f"{reference['clause_no']}#{reference.get('item_no') or ''}"
+
+
+def reference_label(reference: dict[str, str]) -> str:
+    item_no = reference.get("item_no") or ""
+    return f"{reference['clause_no']} 第{item_no}款" if item_no else reference["clause_no"]
+
+
+def reference_sort_key(reference: dict[str, str]) -> tuple[tuple[int, ...], int]:
+    item_no = reference.get("item_no") or "0"
+    return clause_sort_key(reference["clause_no"]), int(item_no)
+
+
+def candidate_reference_key(candidate: dict[str, object]) -> str:
+    return reference_key(
+        {
+            "clause_no": str(candidate.get("clause_no") or ""),
+            "item_no": str(candidate.get("item_no") or ""),
+        }
+    )
+
+
+def candidate_sort_key(candidate: dict[str, object]) -> tuple[tuple[int, ...], int]:
+    return reference_sort_key(
+        {
+            "clause_no": str(candidate.get("clause_no") or ""),
+            "item_no": str(candidate.get("item_no") or ""),
+        }
+    )
 
 
 def extract_clause_numbers(value: str) -> list[str]:
@@ -1054,7 +1284,7 @@ def normative_body_range(pages: list[str]) -> tuple[int, int]:
     end_index = len(pages)
     for index in range(start_index + 1, len(pages)):
         page_start = pages[index][:600]
-        if "条文说明" in page_start and ("中华人民共和国国家标准" in page_start or "# 条文说明" in page_start):
+        if "条文说明" in page_start and ("中华人民共和国" in page_start or "# 条文说明" in page_start):
             end_index = index
             break
     return start_index, end_index

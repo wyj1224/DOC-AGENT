@@ -9,16 +9,16 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
 from app.agent.workflow import agent_check
-from app.auth import get_current_user
 from app.config import BACKEND_ROOT
 from app.db.database import SessionLocal
 from app.db.models import AgentSession, CheckRun, ClauseExtractionRun, User, WordDocument
+from app.visitor import get_current_visitor
 
 
 router = APIRouter(
     prefix="/agent",
     tags=["Agent"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(get_current_visitor)],
 )
 UPLOAD_ROOT = BACKEND_ROOT / "data" / "uploads"
 
@@ -31,7 +31,7 @@ def check_with_agent(
     publish_date: str = Form(""),
     mode: str = Form(""),
     file: UploadFile | None = File(None),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_visitor),
 ):
     file_path = save_agent_upload(file, mode) if file else ""
     parsed_publish_date = date.fromisoformat(publish_date) if publish_date else None
@@ -54,7 +54,7 @@ async def check_with_agent_stream(
     publish_date: str = Form(""),
     mode: str = Form(""),
     file: UploadFile | None = File(None),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_visitor),
 ):
     parsed_publish_date = date.fromisoformat(publish_date) if publish_date else None
     file_path = save_agent_upload(file, mode) if file else ""
@@ -97,7 +97,7 @@ async def check_with_agent_stream(
 
 
 @router.get("/sessions")
-def list_agent_sessions(limit: int = 30, user: User = Depends(get_current_user)):
+def list_agent_sessions(limit: int = 30, user: User = Depends(get_current_visitor)):
     with SessionLocal() as session:
         items = (
             session.query(AgentSession)
@@ -138,7 +138,7 @@ def list_agent_sessions(limit: int = 30, user: User = Depends(get_current_user))
 
 
 @router.get("/sessions/{session_id}")
-def get_agent_session(session_id: int, user: User = Depends(get_current_user)):
+def get_agent_session(session_id: int, user: User = Depends(get_current_visitor)):
     with SessionLocal() as session:
         agent_session = (
             session.query(AgentSession)
@@ -168,7 +168,7 @@ def get_agent_session(session_id: int, user: User = Depends(get_current_user)):
 
 
 @router.delete("/sessions/{session_id}")
-def delete_agent_session(session_id: int, user: User = Depends(get_current_user)):
+def delete_agent_session(session_id: int, user: User = Depends(get_current_visitor)):
     with SessionLocal() as session:
         agent_session = (
             session.query(AgentSession)
@@ -188,13 +188,19 @@ def delete_agent_session(session_id: int, user: User = Depends(get_current_user)
 @router.get("/runs")
 def list_agent_runs(
     document_id: int | None = None,
+    session_id: int | None = None,
+    run_type: str = "",
     limit: int = 20,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_visitor),
 ):
     with SessionLocal() as session:
         query = session.query(CheckRun).filter(CheckRun.owner_user_id == user.id)
         if document_id:
             query = query.filter(CheckRun.document_id == document_id)
+        if session_id:
+            query = query.filter(CheckRun.session_id == session_id)
+        if run_type:
+            query = query.filter(CheckRun.run_type == run_type)
         runs = query.order_by(CheckRun.id.desc()).limit(limit).all()
         document_ids = [item.document_id for item in runs if item.document_id]
         documents = (
@@ -210,7 +216,7 @@ def list_agent_runs(
 
 
 @router.get("/runs/{run_id}")
-def get_agent_run(run_id: int, user: User = Depends(get_current_user)):
+def get_agent_run(run_id: int, user: User = Depends(get_current_visitor)):
     with SessionLocal() as session:
         check_run = (
             session.query(CheckRun)
@@ -224,7 +230,7 @@ def get_agent_run(run_id: int, user: User = Depends(get_current_user)):
 
 
 @router.delete("/runs/{run_id}")
-def delete_agent_run(run_id: int, user: User = Depends(get_current_user)):
+def delete_agent_run(run_id: int, user: User = Depends(get_current_visitor)):
     with SessionLocal() as session:
         check_run = (
             session.query(CheckRun)
@@ -271,13 +277,15 @@ def agent_session_detail(
         "messages": agent_session.messages or [],
         "summary": agent_session.summary,
         "summarized_message_count": agent_session.summarized_message_count,
-        "last_check_run_id": agent_session.last_check_run_id,
+        "last_word_check_run_id": agent_session.last_word_check_run_id,
     }
 
 
 def check_run_summary(check_run: CheckRun, document_file_name: str = "") -> dict[str, object]:
     return {
         "run_id": check_run.id,
+        "session_id": check_run.session_id,
+        "run_type": check_run.run_type,
         "document_id": check_run.document_id,
         "document_file_name": document_file_name,
         "status": check_run.status,

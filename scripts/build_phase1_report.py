@@ -436,7 +436,7 @@ def build_story():
                 ["backend/app/services/word_check.py", "执行设计依据与标准库、正文与设计依据一致性检查，生成问题记录"],
                 ["backend/app/services/excel_ingest.py", "读取 Excel 强条库和标准有效性清单，写入数据库"],
                 ["backend/app/db/models.py", "定义强制性条文、标准有效性、标准引用记录、问题记录等表"],
-                ["frontend/src/App.tsx", "前端工作台、问题列表、中文问题类型与严重等级展示"],
+                ["frontend-vue2/src/components/ResultPanel.vue", "Vue 2 公共工作台的问题列表、中文问题类型与严重等级展示"],
             ],
             [6.0 * cm, 10.2 * cm],
             small=True,

@@ -115,6 +115,12 @@ def execute_tools(
             args["publish_date"] = publish_date
         if tool_name == "parse_word_tool":
             args = {key: args[key] for key in ("file_path", "document_id") if key in args}
+        if tool_name in {
+            "parse_word_tool",
+            "word_check_tool",
+            "completeness_check_tool",
+            "get_issues_tool",
+        }:
             args["owner_user_id"] = owner_user_id
         result = run_tool(tool_name, args)
         if tool_name == "parse_word_tool":
@@ -632,7 +638,7 @@ def agent_check(
     requested_mode: str = "",
 ) -> dict[str, object]:
     if owner_user_id is None:
-        raise ValueError("缺少当前用户")
+        raise ValueError("缺少当前访客")
     session_context = prepare_session(
         owner_user_id=owner_user_id,
         session_id=session_id,
@@ -641,7 +647,16 @@ def agent_check(
     )
     document_id = session_context.document_id
     started_at = datetime.now(timezone.utc)
-    run_id = create_check_run(owner_user_id, document_id, message, started_at)
+    run_type = requested_mode if requested_mode in ("knowledge", "clause_extract") else "unknown"
+    plan: dict[str, object] = {}
+    run_id = create_check_run(
+        owner_user_id,
+        session_context.session_id,
+        document_id,
+        message,
+        started_at,
+        run_type,
+    )
     try:
         if requested_mode == "clause_extract":
             plan = {"mode": "clause_extract", "steps": []}
@@ -658,6 +673,7 @@ def agent_check(
                 conversation_context=session_context.conversation,
                 requested_mode=requested_mode,
             )
+        run_type = run_type_for_plan(plan)
         clause_extraction_run_id: int | None = None
         if plan["mode"] == "word_edit":
             tool_results: list[dict[str, object]] = []
@@ -714,7 +730,7 @@ def agent_check(
 
         answer = final_answer(message, tool_results, conversation_context=session_context.conversation)
         issue_count = count_issues(tool_results)
-        finish_check_run(run_id, "success", plan, tool_results, answer, "", started_at, issue_count)
+        finish_check_run(run_id, "success", run_type, plan, tool_results, answer, "", started_at, issue_count)
         final_document_id = infer_document_id(tool_results) or document_id
         append_turn(
             owner_user_id=owner_user_id,
@@ -722,6 +738,7 @@ def agent_check(
             user_message=message,
             assistant_message=answer,
             run_id=run_id,
+            run_type=run_type,
             document_id=final_document_id,
             clause_extraction_run_id=clause_extraction_run_id,
         )
@@ -733,7 +750,7 @@ def agent_check(
             "answer": answer,
         }
     except Exception as exc:
-        finish_check_run(run_id, "failed", {}, [], "", str(exc), started_at, 0)
+        finish_check_run(run_id, "failed", run_type, plan, [], "", str(exc), started_at, 0)
         try:
             append_turn(
                 owner_user_id=owner_user_id,
@@ -741,6 +758,7 @@ def agent_check(
                 user_message=message,
                 assistant_message=f"请求未完成：{exc}",
                 run_id=run_id,
+                run_type=run_type,
                 document_id=document_id,
                 clause_extraction_run_id=session_context.clause_extraction_run_id,
             )
@@ -751,14 +769,18 @@ def agent_check(
 
 def create_check_run(
     owner_user_id: int,
+    session_id: int,
     document_id: int | None,
     message: str,
     started_at: datetime,
+    run_type: str,
 ) -> int:
     with SessionLocal() as session:
         check_run = CheckRun(
             owner_user_id=owner_user_id,
+            session_id=session_id,
             document_id=document_id,
+            run_type=run_type,
             user_message=message,
             started_at=started_at,
             status="running",
@@ -772,6 +794,7 @@ def create_check_run(
 def finish_check_run(
     run_id: int,
     status: str,
+    run_type: str,
     plan: dict[str, object],
     tool_results: list[dict[str, object]],
     answer: str,
@@ -784,6 +807,7 @@ def finish_check_run(
         check_run = session.get(CheckRun, run_id)
         if not check_run:
             return
+        check_run.run_type = run_type
         check_run.tool_plan = json_safe(plan)
         check_run.tool_results = json_safe(tool_results)
         check_run.answer = answer
@@ -794,6 +818,18 @@ def finish_check_run(
         check_run.duration_ms = int((finished_at - started_at).total_seconds() * 1000)
         check_run.issue_count = issue_count
         session.commit()
+
+
+def run_type_for_plan(plan: dict[str, object]) -> str:
+    mode = str(plan.get("mode") or "")
+    if mode in ("word_edit", "clause_extract"):
+        return mode
+    tools = {str(step.get("tool") or "") for step in list(plan.get("steps") or [])}
+    if "knowledge_query_tool" in tools:
+        return "knowledge"
+    if tools & {"parse_word_tool", "word_check_tool", "completeness_check_tool", "get_issues_tool"}:
+        return "word_check"
+    return "general"
 
 
 def count_issues(tool_results: list[dict[str, object]]) -> int:
