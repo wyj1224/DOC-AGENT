@@ -2,7 +2,10 @@
   <aside class="app-sidebar" :class="{ 'is-collapsed': collapsed }">
     <div class="sidebar-brand-row">
       <div class="product-mark"><FileCheck2 :size="20" /></div>
-      <strong v-if="!collapsed">DOC AGENT</strong>
+      <span v-if="!collapsed" class="sidebar-brand-copy">
+        <strong>灵枢·规鉴</strong>
+        <small>基于大模型的通信工程<br />强制性条文智能检测系统</small>
+      </span>
       <button class="sidebar-collapse" type="button" :title="collapsed ? '展开侧栏' : '收起侧栏'" @click="$emit('toggle')">
         <PanelLeftOpen v-if="collapsed" :size="18" />
         <PanelLeftClose v-else :size="18" />

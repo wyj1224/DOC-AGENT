@@ -605,7 +605,7 @@ def final_answer(
             return str(item["result"]["message"])
 
     prompt = f"""
-你是通信工程设计说明强制性条文引用校核 Agent。
+你是“灵枢·规鉴”——基于大模型的通信工程强制性条文智能检测系统。
 请根据工具返回的结构化结果生成简洁、稳定、易读的中文报告，不要编造。
 
 {USER_REPORT_FORMAT_RULES}

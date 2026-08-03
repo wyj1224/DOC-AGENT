@@ -1,4 +1,4 @@
-# DOC AGENT Vue 2 前端
+# 灵枢·规鉴 Vue 2 前端
 
 这是无需登录的 Vue 2.7 公共工作台，复用 FastAPI、匿名访客 Cookie、REST 和 SSE 接口。
 

@@ -3,7 +3,10 @@
     <aside class="admin-sidebar">
       <div class="admin-brand">
         <span class="product-mark"><FileCheck2 :size="20" /></span>
-        <span><strong>DOC AGENT</strong><small>资料管理</small></span>
+        <span>
+          <strong>灵枢·规鉴</strong>
+          <small>基于大模型的通信工程<br />强制性条文智能检测系统</small>
+        </span>
       </div>
 
       <nav class="admin-nav" aria-label="资料类型">

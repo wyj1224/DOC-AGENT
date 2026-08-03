@@ -306,7 +306,7 @@ textarea:focus-visible {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 40px;
+  min-height: 52px;
   padding: 0 4px;
 }
 
@@ -321,10 +321,23 @@ textarea:focus-visible {
   place-items: center;
 }
 
-.sidebar-brand-row > strong {
+.sidebar-brand-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.sidebar-brand-copy strong {
   overflow: hidden;
   font-size: 15px;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-brand-copy small {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.35;
   white-space: nowrap;
 }
 
@@ -1977,7 +1990,7 @@ textarea:focus-visible {
     padding: 12px 10px;
   }
 
-  .sidebar-brand-row > strong,
+  .sidebar-brand-copy,
   .sidebar-section-label,
   .history-item > span,
   .settings-button span,

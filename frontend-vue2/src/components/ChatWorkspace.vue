@@ -36,9 +36,9 @@
       </div>
       <div v-else class="message-stream">
         <article v-for="message in messages" :key="message.id" class="chat-message" :class="message.role">
-          <div class="message-avatar">{{ message.role === "assistant" ? "D" : "你" }}</div>
+          <div class="message-avatar">{{ message.role === "assistant" ? "灵" : "你" }}</div>
           <div class="message-content">
-            <span class="message-author">{{ message.role === "assistant" ? "DOC AGENT" : "你" }}</span>
+            <span class="message-author">{{ message.role === "assistant" ? "灵枢·规鉴" : "你" }}</span>
             <ReportMarkdown v-if="message.role === 'assistant'" :text="message.content" />
             <p v-else>{{ message.content }}</p>
             <span v-if="message.pending" class="streaming-cursor" aria-label="正在生成" />

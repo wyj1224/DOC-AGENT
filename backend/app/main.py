@@ -23,7 +23,7 @@ def cors_origins() -> list[str]:
     return defaults + configured
 
 
-app = FastAPI(title="Clause Agent API")
+app = FastAPI(title="灵枢·规鉴 API")
 
 app.add_middleware(
     CORSMiddleware,

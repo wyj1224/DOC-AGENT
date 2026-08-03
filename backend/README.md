@@ -1,4 +1,4 @@
-# DOC AGENT Backend
+# 灵枢·规鉴 Backend
 
 后端基于 FastAPI，负责匿名访客隔离、会话记忆、Agent 编排、Word 一致性与完整性校验、Excel 标准库和通用知识库 RAG。
 
