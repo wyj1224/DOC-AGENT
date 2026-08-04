@@ -31,5 +31,6 @@ async function responseError(response) {
 
 function getApiBase() {
   const configured = import.meta.env && import.meta.env.VITE_API_BASE;
-  return configured ? configured.replace(/\/$/, "") : "http://127.0.0.1:8000";
+  if (configured) return configured.replace(/\/$/, "");
+  return `${window.location.protocol}//${window.location.hostname}:8000`;
 }
