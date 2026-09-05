@@ -46,6 +46,9 @@
       </div>
     </div>
 
+    <button class="sidebar-admin-button" type="button" title="资料管理" @click="$emit('open-admin')">
+      <Settings :size="17" /><span v-if="!collapsed">资料管理</span>
+    </button>
   </aside>
 </template>
 
@@ -57,12 +60,13 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
+  Settings,
   Trash2,
 } from "lucide-vue";
 
 export default {
   name: "AppSidebar",
-  components: { FileCheck2, Loader2, MessageSquareText, PanelLeftClose, PanelLeftOpen, Plus, Trash2 },
+  components: { FileCheck2, Loader2, MessageSquareText, PanelLeftClose, PanelLeftOpen, Plus, Settings, Trash2 },
   props: {
     collapsed: Boolean,
     sessions: { type: Array, default: () => [] },

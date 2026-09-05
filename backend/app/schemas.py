@@ -10,22 +10,6 @@ class TextChunk:
     chunk_index: int
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def as_milvus_row(self, vector: list[float]) -> dict[str, Any]:
-        return {
-            "text": self.text,
-            "source_type": self.source_type,
-            "source_file": self.source_file,
-            "chunk_index": self.chunk_index,
-            "standard_no": self.metadata.get("standard_no", ""),
-            "standard_name": self.metadata.get("standard_name", ""),
-            "clause_no": self.metadata.get("clause_no", ""),
-            "applicable_scope": self.metadata.get("applicable_scope", ""),
-            "sheet_name": self.metadata.get("sheet_name", ""),
-            "row_index": int(self.metadata.get("row_index") or 0),
-            "dense_vector": vector,
-        }
-
-
 @dataclass
 class StandardValidityRecord:
     old_standard_text: str

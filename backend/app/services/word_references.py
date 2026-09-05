@@ -195,32 +195,6 @@ def extract_name_matches(text: str, *, is_design_basis: bool) -> list[dict[str, 
     return matches
 
 
-def nearest_code_index(
-    start: int,
-    end: int,
-    code_matches: list[dict[str, object]],
-    used_indexes: set[int],
-    max_distance: int = 80,
-) -> int | None:
-    best_index: int | None = None
-    best_distance = max_distance + 1
-    for index, code in enumerate(code_matches):
-        if index in used_indexes:
-            continue
-        code_start = int(code["start"])
-        code_end = int(code["end"])
-        if code_end <= start:
-            distance = start - code_end
-        elif code_start >= end:
-            distance = code_start - end
-        else:
-            distance = 0
-        if distance <= max_distance and distance < best_distance:
-            best_index = index
-            best_distance = distance
-    return best_index
-
-
 def dedupe_reference_items(items: list[dict[str, object]]) -> list[dict[str, object]]:
     deduped: list[dict[str, object]] = []
     seen: set[tuple[object, ...]] = set()

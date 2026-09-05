@@ -99,12 +99,14 @@ def parse_heading(paragraph, text: str) -> tuple[int, str, str]:
         title = match.group(2).strip()
         level = level or heading_no.count(".") + 1
 
-    if not level or not is_real_heading_text(text, title, heading_no, bool(match), bool(style_level)):
+    if not level or not is_real_heading_text(text, title, bool(match), bool(style_level)):
         return 0, "", text
     return level, heading_no, title
 
 
-def is_real_heading_text(text: str, title: str, heading_no: str, is_numbered_heading: bool, has_heading_style: bool) -> bool:
+def is_real_heading_text(
+    text: str, title: str, is_numbered_heading: bool, has_heading_style: bool
+) -> bool:
     if LIST_ITEM_RE.match(text) and not is_numbered_heading:
         return False
     if looks_like_body_sentence(text):
@@ -122,6 +124,4 @@ def looks_like_body_sentence(text: str) -> bool:
         return True
     if STANDARD_NO_RE.search(value) and len(value) > 25:
         return True
-    if value.startswith(("根据", "依据", "按照")) and len(value) > 20:
-        return True
-    return False
+    return value.startswith(("根据", "依据", "按照")) and len(value) > 20

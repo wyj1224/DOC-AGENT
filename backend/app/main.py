@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db.database import init_db
-from app.routers import agent, excel, knowledge, system, templates, word
+from app.routers import agent, excel, system, templates, word
 from app.visitor import prepare_visitor, set_visitor_cookie
 
 
@@ -42,7 +42,6 @@ async def anonymous_visitor_cookie(request, call_next):
     return response
 
 app.include_router(system.router)
-app.include_router(knowledge.router)
 app.include_router(excel.router)
 app.include_router(word.router)
 app.include_router(templates.router)

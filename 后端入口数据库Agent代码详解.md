@@ -1,5 +1,7 @@
 # 后端入口、数据库与 Agent 代码详解
 
+> 历史说明：本文记录的是 2026-09-05 Harness 重构前的旧流程，其中 `planner -> execute_tools`、知识问答 RAG 和业务 `decision_trace` 已被移除。当前代码请以 [agent.md](./agent.md) 为准。
+
 这份文档专门解释当前改动比较大的三块代码：
 
 - `backend/app/main.py`：FastAPI 后端入口，定义所有 HTTP 接口。

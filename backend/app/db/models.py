@@ -69,24 +69,6 @@ class StandardValidityRecord(Base, TimestampMixin):
     )
 
 
-class KnowledgeDocument(Base, TimestampMixin):
-    __tablename__ = "knowledge_documents"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    owner_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
-    file_name: Mapped[str] = mapped_column(String(512), nullable=False)
-    file_path: Mapped[str] = mapped_column(String(1024), nullable=False)
-    file_type: Mapped[str] = mapped_column(String(32), default="", nullable=False)
-    parse_status: Mapped[str] = mapped_column(String(32), default="parsing", nullable=False)
-    page_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    chunk_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    error_message: Mapped[str] = mapped_column(Text, default="", nullable=False)
-
-    __table_args__ = (
-        Index("ix_knowledge_documents_status", "parse_status"),
-    )
-
-
 class WordDocument(Base, TimestampMixin):
     __tablename__ = "word_documents"
 
@@ -246,6 +228,12 @@ class CheckRun(Base, TimestampMixin):
     session_id: Mapped[int | None] = mapped_column(
         ForeignKey("agent_sessions.id", ondelete="SET NULL"), nullable=True
     )
+    task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_tasks.id", ondelete="SET NULL"), nullable=True
+    )
+    episode_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_episodes.id", ondelete="SET NULL"), nullable=True
+    )
     document_id: Mapped[int | None] = mapped_column(ForeignKey("word_documents.id"), nullable=True)
     run_type: Mapped[str] = mapped_column(String(32), default="unknown", nullable=False)
     user_message: Mapped[str] = mapped_column(Text, default="", nullable=False)
@@ -271,11 +259,16 @@ class WordEditRun(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     session_id: Mapped[int | None] = mapped_column(ForeignKey("agent_sessions.id", ondelete="SET NULL"), nullable=True)
+    task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_tasks.id", ondelete="SET NULL"), nullable=True
+    )
+    episode_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_episodes.id", ondelete="SET NULL"), nullable=True
+    )
     source_document_id: Mapped[int] = mapped_column(ForeignKey("word_documents.id"), nullable=False)
     source_check_run_id: Mapped[int | None] = mapped_column(ForeignKey("check_runs.id", ondelete="SET NULL"), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="planning", nullable=False)
     changes: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
-    decision_trace: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     output_document_id: Mapped[int | None] = mapped_column(ForeignKey("word_documents.id"), nullable=True)
     verification_run_id: Mapped[int | None] = mapped_column(ForeignKey("check_runs.id", ondelete="SET NULL"), nullable=True)
     error_message: Mapped[str] = mapped_column(Text, default="", nullable=False)
@@ -303,46 +296,125 @@ class AgentSession(Base, TimestampMixin):
         ForeignKey("check_runs.id", ondelete="SET NULL"), nullable=True
     )
     active_edit_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    active_clause_extraction_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_task_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_episode_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
     summarized_message_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     __table_args__ = (
         Index("ix_agent_sessions_owner_updated", "owner_user_id", "updated_at"),
     )
+class AgentTask(Base, TimestampMixin):
+    """One user goal. Retries create new episodes under the same task."""
 
-
-class ClauseExtractionRun(Base, TimestampMixin):
-    __tablename__ = "clause_extraction_runs"
+    __tablename__ = "agent_tasks"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    owner_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
     session_id: Mapped[int | None] = mapped_column(
         ForeignKey("agent_sessions.id", ondelete="SET NULL"), nullable=True
     )
-    file_name: Mapped[str] = mapped_column(String(512), nullable=False)
-    file_path: Mapped[str] = mapped_column(String(1024), nullable=False)
-    file_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    parsed_pages_path: Mapped[str] = mapped_column(String(1024), default="", nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default="planning", nullable=False)
-    mandatory_status: Mapped[str] = mapped_column(String(32), default="unknown", nullable=False)
-    detection_methods: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
-    page_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    clause_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    result_json: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
-    decision_trace: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
-    parser_version: Mapped[str] = mapped_column(String(32), default="1", nullable=False)
-    prompt_version: Mapped[str] = mapped_column(String(32), default="1", nullable=False)
+    task_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    user_message: Mapped[str] = mapped_column(Text, nullable=False)
+    input_data: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="running", nullable=False)
+    final_episode_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    final_output: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     error_message: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
-        Index("ix_clause_extraction_runs_owner_status", "owner_user_id", "status"),
+        Index("ix_agent_tasks_owner_type", "owner_user_id", "task_type"),
+        Index("ix_agent_tasks_session_created", "session_id", "created_at"),
+    )
+
+
+class AgentEpisode(Base, TimestampMixin):
+    """One complete attempt at an AgentTask."""
+
+    __tablename__ = "agent_episodes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("agent_tasks.id", ondelete="CASCADE"), nullable=False
+    )
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="running", nullable=False)
+    retrieved_experience_ids: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    evaluation: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    reflection: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    final_output: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    error_message: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ux_agent_episodes_task_attempt", "task_id", "attempt_no", unique=True),
+    )
+
+
+class AgentStep(Base, TimestampMixin):
+    """One observable action/observation transition."""
+
+    __tablename__ = "agent_steps"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    episode_id: Mapped[int] = mapped_column(
+        ForeignKey("agent_episodes.id", ondelete="CASCADE"), nullable=False
+    )
+    step_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    model_input: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    raw_model_output: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    action: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    trusted_args: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    observation: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    state_before: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    state_after: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="completed", nullable=False)
+    error_message: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    __table_args__ = (
+        Index("ux_agent_steps_episode_index", "episode_id", "step_index", unique=True),
+    )
+
+
+class AgentExperience(Base, TimestampMixin):
+    """A validated lesson distilled from a failed then corrected episode."""
+
+    __tablename__ = "agent_experiences"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    task_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="candidate", nullable=False)
+    failure_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    failure_stage: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    failure_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    lesson: Mapped[str] = mapped_column(Text, nullable=False)
+    retry_strategy: Mapped[str] = mapped_column(Text, nullable=False)
+    success_summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    evidence: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    corrective_actions: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    failed_episode_id: Mapped[int] = mapped_column(
+        ForeignKey("agent_episodes.id", ondelete="CASCADE"), nullable=False
+    )
+    successful_episode_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_episodes.id", ondelete="SET NULL"), nullable=True
+    )
+    use_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    success_after_use_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    __table_args__ = (
         Index(
-            "ix_clause_extraction_runs_owner_hash_version",
+            "ix_agent_experiences_owner_type_status",
             "owner_user_id",
-            "file_hash",
-            "parser_version",
-            "prompt_version",
+            "task_type",
+            "status",
         ),
-        Index("ix_clause_extraction_runs_session_created", "session_id", "created_at"),
     )

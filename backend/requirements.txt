@@ -1,14 +1,15 @@
 # 推荐 Python 3.11
 #
 # 优先新建干净环境：
-#   conda create -n clause-agent python=3.11 -y
-#   conda activate clause-agent
+#   conda create -n doc-agent python=3.11 -y
+#   conda activate doc-agent
 #   python -m pip install --upgrade pip setuptools wheel
 #   python -m pip install -r requirements.txt
 
 # 基础配置
 python-dotenv==1.2.1
 fastapi==0.124.4
+pydantic==2.12.4
 uvicorn[standard]==0.38.0
 python-multipart==0.0.21
 
@@ -19,13 +20,5 @@ python-docx==1.2.0
 SQLAlchemy==2.0.51
 psycopg[binary]==3.2.13
 
-# 文档解析、中文分词和向量库
-llama-cloud-services==0.6.94
-jieba==0.42.1
-pymilvus[milvus_lite]==3.0.0
-numpy==2.3.5
-Pillow==12.0.0
-PyMuPDF==1.26.7
-
-# 千问 embedding 走 OpenAI compatible API，不使用 LlamaIndex DashScopeEmbedding
+# DeepSeek 接口
 openai==2.43.0

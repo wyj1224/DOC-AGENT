@@ -327,30 +327,6 @@ def check_body_against_basis(
     return issues
 
 
-def find_matched_clauses(
-    reference: WordReference,
-    ref_nos: list[str],
-    ref_names: list[str],
-    clauses: list[MandatoryClause],
-    clauses_by_no: dict[str, list[MandatoryClause]],
-) -> list[MandatoryClause]:
-    matched: list[MandatoryClause] = []
-    for no in ref_nos:
-        matched.extend(clauses_by_no.get(normalize_no(no), []))
-    if matched:
-        return list(dict.fromkeys(matched))
-
-    for name in ref_names:
-        normalized_name = normalize_name(name)
-        if not normalized_name:
-            continue
-        for clause in clauses:
-            clause_name = normalize_name(clause.standard_name)
-            if normalized_name in clause_name or clause_name in normalized_name:
-                matched.append(clause)
-    return list(dict.fromkeys(matched))
-
-
 def find_clauses_by_no(ref_nos: list[str], clauses_by_no: dict[str, list[MandatoryClause]]) -> list[MandatoryClause]:
     matched: list[MandatoryClause] = []
     for no in ref_nos:
@@ -438,15 +414,6 @@ def name_mismatch(ref_names: list[str], matched_clauses: list[MandatoryClause]) 
     return bool(normalized_refs and normalized_clauses and not names_equivalent(normalized_refs, normalized_clauses))
 
 
-def has_clause(matched_clauses: list[MandatoryClause], clause_no: str) -> bool:
-    target = normalize_clause_no(clause_no)
-    return any(normalize_clause_no(clause.clause_no) == target for clause in matched_clauses)
-
-
-def should_check_clause_no(clause_no: str) -> bool:
-    return not re.search(r"[-－]\d{4}$", clause_no)
-
-
 def find_replaced_records(
     reference: WordReference,
     ref_nos: list[str],
@@ -522,10 +489,6 @@ def has_common_code(left: set[str], right: set[str]) -> bool:
     return bool(left and right and left.intersection(right))
 
 
-def names_match(ref_names: list[str], candidate_names: list[str]) -> bool:
-    return any(ref and candidate and (ref in candidate or candidate in ref) for ref in ref_names for candidate in candidate_names)
-
-
 def names_equivalent(left: list[str], right: list[str]) -> bool:
     left_keys = {normalize_name(name) for name in left if normalize_name(name)}
     right_keys = {normalize_name(name) for name in right if normalize_name(name)}
@@ -541,8 +504,7 @@ def replacement_names_match(ref_names: list[str], candidate_names: list[str]) ->
 def replacement_name_key(value: str) -> str:
     text = normalize_name(value)
     text = re.sub(r"(?:19|20)\d{2}年版", "", text)
-    text = re.sub(r"(?:19|20)\d{2}版", "", text)
-    return text
+    return re.sub(r"(?:19|20)\d{2}版", "", text)
 
 
 def replacement_record_fix_data(
@@ -616,7 +578,7 @@ def make_issue(
     matched_standard_record_id: int | None = None,
     fix_data: dict[str, object] | None = None,
 ) -> CheckIssue:
-    issue = CheckIssue(
+    return CheckIssue(
         owner_user_id=reference.owner_user_id,
         document_id=document_id,
         word_reference_id=reference.id,
@@ -635,8 +597,6 @@ def make_issue(
         suggestion=suggestion,
         fix_data=fix_data or {},
     )
-    issue._word_reference = reference
-    return issue
 
 
 def scope_for_issue(issue_type: str) -> str:
@@ -664,10 +624,6 @@ def issue_to_dict(issue: CheckIssue) -> dict[str, object]:
         "suggestion": issue.suggestion,
         "fix_data": issue.fix_data or {},
     }
-
-
-def issue_reference(issue: CheckIssue) -> WordReference | None:
-    return getattr(issue, "word_reference", None) or getattr(issue, "_word_reference", None)
 
 
 def issue_sort_key(issue: CheckIssue) -> tuple[int, int, int]:
@@ -703,7 +659,3 @@ def normalize_name(value: str) -> str:
     text = re.sub(r"\s+", "", text)
     text = re.sub(r"^(?:中华人民共和国)?(?:国家|通信行业|行业|中国移动企业|企业)?标准", "", text)
     return text.lower()
-
-
-def normalize_clause_no(value: str) -> str:
-    return (value or "").replace("－", "-").strip()

@@ -3,6 +3,11 @@ from openai import OpenAI
 from app.config import get_settings
 
 
+LLM_TIMEOUT_SECONDS = 60.0
+LLM_MAX_TOKENS = 4096
+LLM_REPORT_MAX_TOKENS = 8192
+
+
 USER_REPORT_FORMAT_RULES = """
 面向用户的回答必须使用统一、易读的排版：
 1. 只使用简短自然段、Markdown 二级/三级标题、项目符号和编号列表。
@@ -14,14 +19,37 @@ USER_REPORT_FORMAT_RULES = """
 """.strip()
 
 
-def call_llm(prompt: str, *, temperature: float = 0) -> str:
+def call_llm_messages(
+    messages: list[dict[str, str]],
+    *,
+    temperature: float = 0,
+    max_tokens: int = LLM_MAX_TOKENS,
+) -> str:
     settings = get_settings()
     if not settings.llm_api_key:
         raise ValueError("请先在 backend/.env 中配置 DEEPSEEK_API_KEY")
-    client = OpenAI(api_key=settings.llm_api_key, base_url=settings.llm_base_url)
+    client = OpenAI(
+        api_key=settings.llm_api_key,
+        base_url=settings.llm_base_url,
+        timeout=LLM_TIMEOUT_SECONDS,
+        max_retries=0,
+    )
     response = client.chat.completions.create(
         model=settings.llm_model,
-        messages=[{"role": "user", "content": prompt}],
+        messages=messages,
         temperature=temperature,
+        max_tokens=max_tokens,
     )
-    return response.choices[0].message.content.strip()
+    content = response.choices[0].message.content or ""
+    if not content.strip():
+        raise ValueError("LLM 未返回可用文本")
+    return content.strip()
+
+
+def call_llm(prompt: str, *, temperature: float = 0) -> str:
+    """Compatibility wrapper for existing business summarizers."""
+    return call_llm_messages(
+        [{"role": "user", "content": prompt}],
+        temperature=temperature,
+        max_tokens=LLM_REPORT_MAX_TOKENS,
+    )

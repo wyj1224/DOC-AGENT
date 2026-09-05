@@ -14,7 +14,6 @@ RECENT_MESSAGE_COUNT = 6
 class SessionContext:
     session_id: int
     document_id: int | None
-    clause_extraction_run_id: int | None
     conversation: str
 
 
@@ -51,7 +50,6 @@ def prepare_session(
         return SessionContext(
             session_id=agent_session.id,
             document_id=document_id or agent_session.active_document_id,
-            clause_extraction_run_id=agent_session.active_clause_extraction_run_id,
             conversation=conversation_text(agent_session),
         )
 
@@ -61,10 +59,11 @@ def append_turn(
     session_id: int,
     user_message: str,
     assistant_message: str,
-    run_id: int,
+    run_id: int | None,
     run_type: str,
     document_id: int | None,
-    clause_extraction_run_id: int | None = None,
+    task_id: int | None = None,
+    episode_id: int | None = None,
 ) -> None:
     now = datetime.now(timezone.utc).isoformat()
     with SessionLocal() as database:
@@ -84,17 +83,22 @@ def append_turn(
                     "role": "assistant",
                     "content": assistant_message,
                     "created_at": now,
-                    "run_id": run_id,
+                    **({"run_id": run_id} if run_id else {}),
+                    **({"task_id": task_id} if task_id else {}),
+                    **({"episode_id": episode_id} if episode_id else {}),
                 },
             ]
         )
         agent_session.messages = messages
         agent_session.active_document_id = document_id or agent_session.active_document_id
-        if clause_extraction_run_id:
-            agent_session.active_clause_extraction_run_id = clause_extraction_run_id
-        agent_session.last_run_id = run_id
-        if run_type == "word_check":
+        if run_id:
+            agent_session.last_run_id = run_id
+        if run_type == "word_check" and run_id:
             agent_session.last_word_check_run_id = run_id
+        if task_id:
+            agent_session.last_task_id = task_id
+        if episode_id:
+            agent_session.last_episode_id = episode_id
         database.commit()
 
     summarize_if_needed(owner_user_id, session_id)

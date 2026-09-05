@@ -1,139 +1,49 @@
 # 灵枢·规鉴 Backend
 
-后端基于 FastAPI，负责匿名访客隔离、会话记忆、Agent 编排、Word 一致性与完整性校验、Excel 标准库和通用知识库 RAG。
+FastAPI 后端专注两种 Agent 任务：`document_check` 和 `word_edit`。二者共用同一个 Harness、轨迹模型、Evaluator、Retry 和 Experience Memory，业务差异封装在独立 Environment 中。
 
-详细源码职责见根目录 [agent.md](../agent.md)。本文只保留后端运行、配置、数据库、接口和命令速查。
+详细代码地图见根目录 [agent.md](../agent.md)。
 
-## 1. 运行组件
-
-| 组件 | 用途 |
-| --- | --- |
-| FastAPI | HTTP API 与 SSE 响应 |
-| PostgreSQL | 匿名访客、会话、标准库、Word 解析结果、问题和运行记录 |
-| Milvus Lite | 强条向量集合与通用知识库双向量集合 |
-| DeepSeek | Agent Planner、最终回答和 RAG 引用回答 |
-| 千问 Embedding | 通用知识库稠密向量 |
-| 千问视觉模型 | 从 PDF 页面识别公告/规则/无强条声明，并读取像素筛选后的黑体候选行条号 |
-| jieba | 中文关键词分词与稀疏向量 |
-| LlamaParse | 通用知识文件和强条正文 OCR 转 Markdown |
-| PyMuPDF | 将 PDF 物理页面渲染为视觉模型输入图片 |
-| python-docx | Word 本地解析、精确 run 写回和修订副本输出 |
-
-PostgreSQL 通过 Docker 启动。Milvus Lite 使用本地文件，不需要额外启动 Milvus 服务。
-
-## 2. 环境要求
+## 1. 依赖
 
 - Python 3.11
-- Docker Desktop
-- 可访问 DeepSeek、阿里百炼和 LlamaParse API
+- PostgreSQL 16
+- DeepSeek：ReAct 决策、Reflection 和最终报告
+- python-docx：Word 解析与精确写回
 
-建议使用独立环境：
+本项目不需要 Milvus、Embedding 或中文分词服务。
 
-```bash
-conda create -n clause-agent python=3.11 -y
-conda activate clause-agent
-python -m pip install --upgrade pip setuptools wheel
-```
-
-## 3. 环境变量
+## 2. 环境变量
 
 ```bash
-cd backend
 cp .env.example .env
 ```
 
-编辑 `.env`：
+关键配置：
 
-| 变量 | 用途 |
-| --- | --- |
-| `DATABASE_URL` | PostgreSQL SQLAlchemy 连接串 |
-| `VISITOR_COOKIE_SECRET` | 匿名访客 Cookie 的 HMAC 签名密钥 |
-| `VISITOR_COOKIE_DAYS` | 访客 Cookie 保存天数，默认 90 |
-| `VISITOR_COOKIE_SECURE` | HTTPS 部署时设为 `true` |
-| `DEEPSEEK_API_KEY` | Planner 和回答模型密钥 |
-| `DEEPSEEK_BASE_URL` | DeepSeek OpenAI Compatible 地址 |
-| `DEEPSEEK_MODEL` | Agent 使用的模型名 |
-| `QWEN_API_KEY` | 千问 Embedding 密钥 |
-| `QWEN_BASE_URL` | 千问 OpenAI Compatible 地址 |
-| `QWEN_EMBEDDING_MODEL` | Embedding 模型名 |
-| `DASHSCOPE_API_KEY` | 百炼视觉模型密钥；未配置时可回退读取 `QWEN_API_KEY` |
-| `QWEN_VISION_BASE_URL` | 百炼或工作空间 OpenAI Compatible 地址 |
-| `QWEN_VISION_MODEL` | PDF 视觉识别模型，当前默认 `qwen3.7-plus` |
-| `LLAMA_CLOUD_API_KEY` | LlamaParse 密钥 |
-| `APP_MILVUS_URI` | Milvus Lite 数据文件路径 |
-| `MILVUS_COLLECTION` | 强条向量集合名 |
-| `KNOWLEDGE_MILVUS_COLLECTION` | 通用知识库集合名 |
+```text
+DATABASE_URL
+VISITOR_COOKIE_SECRET
+DEEPSEEK_API_KEY
+DEEPSEEK_BASE_URL
+DEEPSEEK_MODEL
+```
 
-`.env` 含真实密钥，不要提交。
+`.env` 含真实密钥，不应提交。
 
-## 4. 安装与启动
-
-安装依赖：
+## 3. 启动
 
 ```bash
-cd backend
 python -m pip install -r requirements.txt
-```
-
-启动 PostgreSQL：
-
-```bash
 docker compose up -d postgres
-```
-
-初始化数据库：
-
-```bash
 python -m app.cli.init_db
-```
-
-启动 API：
-
-```bash
 python -m uvicorn app.main:app --reload
 ```
 
-访问地址：
-
-- 健康检查：`http://127.0.0.1:8000/health`
+- 健康检查：`GET http://127.0.0.1:8000/health`
 - Swagger：`http://127.0.0.1:8000/docs`
-- OpenAPI JSON：`http://127.0.0.1:8000/openapi.json`
 
-## 5. 数据库表
-
-| 表 | 内容 |
-| --- | --- |
-| `users` | 内部匿名访客映射；保留原表名以兼容现有外键 |
-| `agent_sessions` | 访客会话、消息 JSONB、摘要和最近文档/运行 ID |
-| `check_runs` | 单轮 Agent 运行，通过 `session_id` 关联会话、`run_type` 标记运行类型，并保存工具计划、结果、回答、耗时和状态 |
-| `word_edit_runs` | 每次 Word 修改请求的唯一任务记录；保存按 cycle 累积的 `changes`、LLM/工具决策轨迹、执行状态、最新副本和复检关联 |
-| `clause_extraction_runs` | PDF 强条 Agent 任务；保存文件指纹、视觉/OCR 证据、`result_json`、状态和决策轨迹 |
-| `mandatory_clauses` | Excel 强制性条文记录 |
-| `standard_validity_records` | Excel 新旧标准替代关系 |
-| `knowledge_documents` | RAG 文件、解析状态、页数和切块数 |
-| `word_documents` | 上传的待检 Word 文档；修订副本以唯一的 `edit_run_id + edit_cycle` 支持幂等解析与恢复 |
-| `word_references` | Word 标准号、标准名、条号和上下文 |
-| `word_sections` | Word 标题和标题之间的正文 |
-| `word_templates` | 模板文件、年份、类型和标题数 |
-| `word_template_headings` | 模板标题列表 |
-| `word_template_key_sections` | 三个关键章节的模板正文、子章节编号和文本块快照 |
-| `check_issues` | 一致性和完整性问题 |
-
-`app.db.database.init_db()` 除 `create_all` 外，还包含开发阶段的兼容性字段和索引补齐。新增正式迁移需求后应改用 Alembic。
-
-## 6. 匿名访客隔离
-
-系统不提供登录和注册。浏览器第一次请求时，后端自动设置 `doc_agent_visitor` HttpOnly Cookie；后续请求通过该 Cookie 定位内部匿名访客记录。
-
-- 会话、Word/PDF、问题、修改任务和强条抽取任务按访客过滤。
-- Cookie 默认保存 90 天，刷新页面不会丢失会话。
-- 清除 Cookie、切换浏览器或设备会获得新的访客身份。
-- 知识库、Word 模板和 Excel 标准库属于全局共享资料，不绑定访客。
-- 公共工作台在 5174，独立资料管理页在 5175；当前管理页采用入口隔离，没有应用层权限校验。
-
-## 7. 主要接口
-
-### Agent 与会话
+## 4. Agent API
 
 ```text
 POST   /agent/check
@@ -141,6 +51,9 @@ POST   /agent/check/stream
 GET    /agent/sessions
 GET    /agent/sessions/{session_id}
 DELETE /agent/sessions/{session_id}
+GET    /agent/tasks
+GET    /agent/tasks/{task_id}
+GET    /agent/experiences
 GET    /agent/runs
 GET    /agent/runs/{run_id}
 DELETE /agent/runs/{run_id}
@@ -149,16 +62,35 @@ DELETE /agent/runs/{run_id}
 `POST /agent/check` 使用 `multipart/form-data`：
 
 ```text
-message: 用户问题
-document_id: 已上传文档 ID，可选
-session_id: 当前会话 ID，可选
+message: 用户要求
+document_id: 已解析 Word ID，可选
+session_id: 会话 ID，可选
 publish_date: YYYY-MM-DD，可选
-file: Word 文件，可选
+mode: document_check | word_edit，可选
 ```
 
-`POST /agent/check/stream` 返回 SSE 事件：`status`、`result`、`delta`、`done` 或 `error`。当前实现是在后端完成 Agent 运行后，将最终回答按小段输出。
+Word 文件统一通过 `POST /word/upload` 上传；Agent 入口只接收解析后的 `document_id`，避免维护两套上传流程。
 
-### Word
+返回值同时包含：
+
+```text
+session_id
+task_id
+episode_id
+attempt_no
+status
+evaluation
+run_id          # 仅文档检查业务记录；兼容旧前端
+tool_plan       # 兼容旧前端
+tool_results    # 兼容旧前端
+answer
+```
+
+`GET /agent/tasks/{task_id}` 可查看该 Task 的全部 Episode、Reflection 与 Step 级 action/observation 轨迹。
+
+## 5. 其他 API
+
+Word：
 
 ```text
 POST /word/upload
@@ -170,15 +102,7 @@ GET  /word/sections
 GET  /word/documents/{document_id}/download
 ```
 
-- `/word/upload` 只接受 `.docx`。
-- `/word/check` 执行依据 vs Excel 和正文 vs 依据的一致性检查。
-- `/word/completeness-check` 自动匹配模板，检查标题、正文和占位符，并比较三个关键章节的正文及子章节编号；文字相似度低于 95% 报警。
-- `/word/fix-consistency` 启动外层 Word Agent Loop：Agent 根据每步 Observation 逐步调用 `inspect`、`prepare`、`apply` 和 `verify`，工具仅修改一致性检查中的警告和高风险问题，并生成副本。
-- `/word/documents/{document_id}/download` 只允许下载当前访客的原文或修订副本。
-
-Word 修订不再由一个固定顺序、固定轮数的内部函数编排。外层 Agent 工作流在一次请求内只创建一条 `WordEditRun`，并在同一条记录的 `changes` 中累积各 cycle 的精确修改。LLM 只选择下一动作和可修问题 ID；`before/after`、`fix_data`、`locator` 和 `span` 始终由确定性服务构造和校验。`max_steps` 与 `max_cycles` 是异常循环的安全预算，不代表预设两轮或其他固定流程。
-
-### Excel 标准库
+Excel 标准库：
 
 ```text
 POST /excel/ingest
@@ -186,15 +110,7 @@ GET  /excel/clauses
 GET  /excel/standard-validity
 ```
 
-`/excel/ingest` 使用 `multipart/form-data`：
-
-```text
-file: Excel 文件
-sheet: 强条
-replace: true
-```
-
-### Word 模板库
+Word 模板：
 
 ```text
 POST   /templates/upload
@@ -203,94 +119,40 @@ GET    /templates/{template_id}
 DELETE /templates/{template_id}
 ```
 
-上传接口字段为 `files`，支持一次选择一个或多个 `.docx`。年份和 `700M/室内/室外` 类型从文件名自动识别。
+知识问答 `/knowledge/*` 已删除。
 
-### 通用知识库
+## 6. 数据库
 
-```text
-POST   /knowledge/documents
-GET    /knowledge/documents
-DELETE /knowledge/documents/{document_id}
-POST   /knowledge/query
-```
+Harness 表：
 
-`/knowledge/documents` 的 `files` 字段支持多文件上传。入库流程：
+- `agent_sessions`：聊天、摘要与结构化资源指针；
+- `agent_tasks`：一次用户目标；
+- `agent_episodes`：一次完整尝试；
+- `agent_steps`：单步 action/observation；
+- `agent_experiences`：candidate/active/retired Insight。
 
-```text
-文件 -> LlamaParse Markdown -> 约 700 字切块
-     -> jieba 稀疏向量 + 千问稠密向量
-     -> Milvus knowledge_chunks
-```
+业务表：
 
-`/knowledge/query` 使用：
+- `check_runs`：文档检查事实；
+- `word_edit_runs`：修改计划、changes、输出与复检；
+- `word_documents`、`word_references`、`word_sections`、`check_issues`；
+- `mandatory_clauses`、`standard_validity_records`；
+- `word_templates`、`word_template_headings`、`word_template_key_sections`。
 
-```text
-question: 问题
-limit: 5
-```
+旧 `knowledge_documents`、`clause_extraction_runs` 表会在 `init_db()` 时删除。
 
-混合检索权重固定为关键词 `0.6`、向量 `0.4`。返回值包含回答、来源文件、页码、原文切块、排名和混合得分。
-
-## 8. Excel 命令行工具
-
-查看工作簿结构：
+## 7. Excel 初始化
 
 ```bash
 python -m app.cli.inspect_excel "../强制性条文整理20260507.xlsx"
-```
-
-预览强条切块，不写数据库：
-
-```bash
-python -m app.cli.ingest_excel "../强制性条文整理20260507.xlsx" \
-  --preview-only \
-  --preview-limit 20 \
-  --export-chunks data/chunks_preview.jsonl
-```
-
-导入 PostgreSQL：
-
-```bash
 python -m app.cli.ingest_excel_pg "../强制性条文整理20260507.xlsx" --replace
 ```
 
-`--replace` 会替换已有 Excel 标准库记录，适合开发和重新导入。
-
-强条向量检索：
+## 8. 测试
 
 ```bash
-python -m app.cli.search "通信局站应采用联合接地方式"
+ruff check app tests
+python -m pytest -q -p no:cacheprovider
 ```
 
-## 9. RAG 冒烟评测
-
-当前样例位于 `data/rag_eval/`。先将 `smoke_knowledge.md` 上传知识库，再执行：
-
-```bash
-python -m app.cli.eval_rag data/rag_eval/questions.example.jsonl --top-k 5
-```
-
-脚本当前判断：
-
-- 目标来源文件是否进入 Top K。
-- 预期关键词是否出现在召回文本中。
-- 汇总检索通过率。
-
-这只是评测程序的冒烟验证。正式 RAG 评测集、Recall@K、MRR、引用正确率和答案要点覆盖率仍是下一阶段工作。
-
-## 10. 开发数据说明
-
-- `data/uploads/`：用户上传原文件。
-- `data/milvus.db`：Milvus Lite 数据。
-- `data/*preview.jsonl`：解析预览。
-- `__pycache__/`：Python 缓存。
-
-这些文件不是核心源码。清理数据库或上传文件前，应先确认是否需要保留现有测试数据。
-
-## 11. 当前后端边界
-
-- Agent 已支持检查、查询、会话记忆、运行 Trace 和 Word 副本自动修订；修订由外层 Agent Loop 根据实时 Observation 选择细粒度工具，并由单条 `WordEditRun.changes` 保存跨 cycle 记忆。
-- 会话/运行记录已按用户隔离；共享资料库是当前产品选择。
-- 部分 Word 直接查询接口仍需要补齐严格的所有权校验。
-- 目前使用启动时兼容性建表逻辑，生产环境应引入正式数据库迁移。
-- 前端流式展示已可用，但当前不是模型 Token 原生流式调用。
+当前数据库初始化方式适合本地开发。生产环境应改用 Alembic，并在执行删除旧表的迁移前备份历史数据库。

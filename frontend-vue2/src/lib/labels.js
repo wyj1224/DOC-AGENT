@@ -34,7 +34,6 @@ export const CHECK_SCOPE_LABELS = {
 export const issueTypeLabel = (value) => ISSUE_TYPE_LABELS[value] || value || "未知问题";
 export const severityLabel = (value) => SEVERITY_LABELS[value] || value || "未知级别";
 export const checkScopeLabel = (value) => CHECK_SCOPE_LABELS[value] || value || "未知分类";
-export const knowledgeStatusLabel = (value) => ({ parsing: "解析中", parsed: "已入库", failed: "解析失败" }[value] || value);
 
 export function translateDisplayText(value) {
   const replacements = { ...ISSUE_TYPE_LABELS, ...CHECK_SCOPE_LABELS, ...SEVERITY_LABELS };

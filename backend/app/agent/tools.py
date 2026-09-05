@@ -6,7 +6,6 @@ from app.config import BACKEND_ROOT
 from app.db.database import SessionLocal
 from app.db.models import CheckIssue, WordDocument, WordEditRun, WordReference, WordSection
 from app.services.completeness_check import check_body_completeness
-from app.services.knowledge_base import answer_knowledge_question
 from app.services.word_check import check_word_document, issue_sort_key, issue_to_dict
 from app.services.word_references import extract_references
 from app.services.word_sections import extract_word_sections
@@ -14,10 +13,6 @@ from app.word_loader import parse_docx_file
 
 
 UPLOAD_ROOT = BACKEND_ROOT / "data" / "uploads"
-
-
-def knowledge_query_tool(question: str, limit: int = 5) -> dict[str, object]:
-    return answer_knowledge_question(question, limit=limit)
 
 
 def parse_word_tool(

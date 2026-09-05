@@ -95,58 +95,6 @@ def excel_row_to_clause_chunks(
     return chunks
 
 
-def chunk_markdown(text: str, *, source_file: str, max_chars: int = 700) -> list[TextChunk]:
-    """Chunk markdown/text while keeping markdown tables together."""
-    lines = text.splitlines()
-    chunks: list[str] = []
-    current: list[str] = []
-    current_len = 0
-    table: list[str] = []
-
-    def flush_current() -> None:
-        nonlocal current, current_len
-        if current:
-            chunks.append("\n".join(current).strip())
-            current = []
-            current_len = 0
-
-    def flush_table() -> None:
-        nonlocal table
-        if table:
-            flush_current()
-            chunks.append("\n".join(table).strip())
-            table = []
-
-    for line in lines:
-        is_table_line = "|" in line and line.strip().startswith("|")
-        if is_table_line:
-            table.append(line)
-            continue
-        if table:
-            flush_table()
-
-        line_len = len(line)
-        if current and current_len + line_len > max_chars:
-            flush_current()
-        current.append(line)
-        current_len += line_len + 1
-
-    flush_table()
-    flush_current()
-
-    return [
-        TextChunk(
-            text=chunk,
-            source_type="markdown_text",
-            source_file=Path(source_file).name,
-            chunk_index=i,
-            metadata={},
-        )
-        for i, chunk in enumerate(chunks)
-        if chunk
-    ]
-
-
 def normalize_text(value: object) -> str:
     return re.sub(r"\s+", " ", value_to_text(value)).strip()
 

@@ -6,22 +6,20 @@
       :selected-session-id="activeSessionId"
       :loading="loading.sessions || loading.sessionDetail"
       @toggle="sidebarCollapsed = !sidebarCollapsed"
-      @new-chat="startNewChat('check')"
+      @new-chat="startNewChat"
       @open-session="openSession"
       @delete-session="sessionToDelete = $event"
+      @open-admin="$emit('open-admin')"
     />
 
     <ChatWorkspace
       :title="taskTitle"
-      :mode="mode"
       :messages="messages"
       :draft="draft"
-      :attached-file="mode === 'clause_extract' ? pdfFile : wordFile"
+      :attached-file="wordFile"
       :word-upload="wordUpload"
-      :clause-file-name="clauseExtractionResult ? clauseExtractionResult.file_name : ''"
       :sending="sending"
       :result-panel-open="resultPanelOpen"
-      @mode-change="startNewChat"
       @draft-change="draft = $event"
       @file-change="changeFile"
       @send="sendMessage"
@@ -32,17 +30,14 @@
 
     <ResultPanel
       :open="resultPanelOpen"
-      :mode="mode"
       :totals="totals"
       :active-scope="activeIssueScope"
       :basis-issues="basisIssues"
       :body-issues="bodyIssues"
       :completeness-issues="completenessIssues"
       :current-issues="currentIssues"
-      :sources="knowledgeResult ? knowledgeResult.sources : []"
-      :agent-result="agentResult"
+      :agent-task="agentTask"
       :edit-result="editResult"
-      :clause-extraction-result="clauseExtractionResult"
       @toggle="resultPanelOpen = !resultPanelOpen"
       @scope-change="activeIssueScope = $event"
       @download-edit="downloadEdit"
@@ -83,8 +78,6 @@ const initialLoading = () => ({
   issues: false,
   sessions: false,
   sessionDetail: false,
-  knowledgeQuery: false,
-  clauseExtraction: false,
 });
 
 export default {
@@ -94,7 +87,6 @@ export default {
     return {
       sidebarCollapsed: false,
       resultPanelOpen: true,
-      mode: "check",
       taskTitle: "新对话",
       messages: [],
       draft: "",
@@ -106,9 +98,8 @@ export default {
       wordUpload: null,
       documentId: "",
       agentResult: null,
+      agentTask: null,
       editResult: null,
-      pdfFile: null,
-      clauseExtractionResult: null,
       basisIssues: null,
       bodyIssues: null,
       completenessIssues: null,
@@ -117,7 +108,6 @@ export default {
       activeSessionId: null,
       sessionToDelete: null,
       deletingSession: false,
-      knowledgeResult: null,
     };
   },
   computed: {
@@ -142,7 +132,7 @@ export default {
       };
     },
     sending() {
-      return this.loading.check || this.loading.uploadWord || this.loading.knowledgeQuery || this.loading.clauseExtraction;
+      return this.loading.check || this.loading.uploadWord;
     },
   },
   created() {
@@ -158,31 +148,23 @@ export default {
       if (this.toastTimer) window.clearTimeout(this.toastTimer);
       this.toastTimer = window.setTimeout(() => { this.toast = null; }, 3200);
     },
-    startNewChat(mode = "check") {
+    startNewChat() {
       this.stopResponse();
-      this.mode = mode;
       this.taskTitle = "新对话";
       this.messages = [];
       this.draft = "";
       this.wordFile = null;
       this.wordUpload = null;
-      this.pdfFile = null;
       this.documentId = "";
       this.agentResult = null;
+      this.agentTask = null;
       this.editResult = null;
-      this.clauseExtractionResult = null;
-      this.knowledgeResult = null;
       this.basisIssues = null;
       this.bodyIssues = null;
       this.completenessIssues = null;
       this.activeSessionId = null;
     },
     changeFile(file) {
-      if (this.mode === "clause_extract") {
-        this.pdfFile = file;
-        this.clauseExtractionResult = null;
-        return;
-      }
       this.wordFile = file;
       if (!file || !this.wordUpload || file.name !== this.wordUpload.file_name) {
         this.wordUpload = null;
@@ -192,28 +174,19 @@ export default {
     },
     async sendMessage() {
       if (this.activeController) return;
-      const message = this.draft.trim() || defaultAttachmentPrompt(
-        this.mode,
-        Boolean(this.wordFile || this.documentId),
-        Boolean(this.pdfFile || this.clauseExtractionResult || this.activeSessionId),
-      );
+      const message = this.draft.trim() || defaultAttachmentPrompt(Boolean(this.wordFile || this.documentId));
       if (!message) return;
-      if (this.mode === "check" && !this.wordFile && !this.documentId) return this.showMessage("error", "请先附加需要校核的 Word 文档");
-      if (this.mode === "clause_extract" && !this.pdfFile && !this.clauseExtractionResult && !this.activeSessionId) {
-        return this.showMessage("error", "请先附加需要自动提取强条的 PDF");
-      }
+      if (!this.wordFile && !this.documentId) return this.showMessage("error", "请先附加需要检查或修改的 Word 文档");
 
       this.draft = "";
-      const attachedName = this.mode === "clause_extract" ? this.pdfFile && this.pdfFile.name : this.wordFile && this.wordFile.name;
+      const attachedName = this.wordFile && this.wordFile.name;
       if (this.taskTitle === "新对话") this.taskTitle = shortTitle(attachedName || message);
       this.messages.push({ id: messageId(), role: "user", content: message });
 
       const controller = new AbortController();
       this.activeController = controller;
       try {
-        if (this.mode === "check") await this.runDocumentCheck(message, controller.signal);
-        else if (this.mode === "clause_extract") await this.runClauseExtraction(message, controller.signal);
-        else await this.runKnowledgeQuery(message, controller.signal);
+        await this.runDocumentCheck(message, controller.signal);
       } finally {
         if (this.activeController === controller) this.activeController = null;
       }
@@ -242,7 +215,6 @@ export default {
         }
         const form = new FormData();
         form.append("message", message);
-        form.append("mode", "check");
         form.append("document_id", String(targetDocumentId));
         if (this.activeSessionId) form.append("session_id", String(this.activeSessionId));
         await streamAgentCheck(form, (event) => {
@@ -250,7 +222,7 @@ export default {
           if (event.type === "status") this.updateChatMessage(assistantId, { content: String(event.data.content || "正在校核…"), pending: true });
           if (event.type === "result") {
             const sessionId = Number(event.data.session_id) || undefined;
-            streamResult = { session_id: sessionId, run_id: Number(event.data.run_id) || undefined, tool_plan: event.data.tool_plan, tool_results: event.data.tool_results };
+            streamResult = agentStreamResult(event.data, sessionId);
             if (sessionId) this.activeSessionId = sessionId;
             returnedEditResult = editResultFromToolResults(event.data.tool_results);
             if (returnedEditResult) {
@@ -280,6 +252,7 @@ export default {
         }, signal);
         assertNotAborted(signal);
         this.agentResult = { ...streamResult, answer };
+        this.agentTask = streamResult.task_id ? await request(`/agent/tasks/${streamResult.task_id}`) : null;
         const scopes = returnedEditResult ? ["basis_excel", "body_basis"] : scopesForMessage(message);
         this.clearInactiveIssues(scopes);
         await Promise.all([...scopes.map((scope) => this.fetchIssues(scope, targetDocumentId)), this.fetchSessions()]);
@@ -305,94 +278,6 @@ export default {
         return data;
       } finally {
         this.loading.uploadWord = false;
-      }
-    },
-    async runClauseExtraction(message, signal) {
-      const assistantId = messageId();
-      this.messages.push({ id: assistantId, role: "assistant", content: "正在自动识别 PDF 中的强制性条文…", pending: true });
-      this.loading.clauseExtraction = true;
-      let answer = "";
-      let receivedDelta = false;
-      let streamResult = {};
-      try {
-        const form = new FormData();
-        form.append("message", message);
-        form.append("mode", "clause_extract");
-        if (this.activeSessionId) form.append("session_id", String(this.activeSessionId));
-        if (this.pdfFile) form.append("file", this.pdfFile);
-        await streamAgentCheck(form, (event) => {
-          if (event.type === "error") throw new Error(String(event.data.content || "强条抽取失败"));
-          if (event.type === "status") this.updateChatMessage(assistantId, { content: String(event.data.content || "正在分析 PDF…"), pending: true });
-          if (event.type === "result") {
-            const sessionId = Number(event.data.session_id) || undefined;
-            streamResult = { session_id: sessionId, run_id: Number(event.data.run_id) || undefined, tool_plan: event.data.tool_plan, tool_results: event.data.tool_results };
-            if (sessionId) this.activeSessionId = sessionId;
-            const extraction = clauseExtractionResultFromToolResults(event.data.tool_results);
-            if (extraction) {
-              this.clauseExtractionResult = extraction;
-              this.pdfFile = null;
-            }
-          }
-          if (event.type === "delta") {
-            const delta = String(event.data.content || "");
-            answer = receivedDelta ? answer + delta : delta;
-            receivedDelta = true;
-            this.updateChatMessage(assistantId, { content: answer, pending: true });
-          }
-          if (event.type === "done") this.updateChatMessage(assistantId, { content: answer, pending: false });
-        }, signal);
-        assertNotAborted(signal);
-        this.agentResult = { ...streamResult, answer };
-        await this.fetchSessions();
-        this.resultPanelOpen = true;
-        this.showMessage("success", "强条抽取完成");
-      } catch (error) {
-        if (isAbortError(error)) return this.updateChatMessage(assistantId, { content: stoppedAnswer(answer), pending: false });
-        const text = errorMessage(error);
-        this.updateChatMessage(assistantId, { content: `请求未完成：${text}`, pending: false });
-        this.showMessage("error", text);
-      } finally {
-        this.loading.clauseExtraction = false;
-      }
-    },
-    async runKnowledgeQuery(question, signal) {
-      const assistantId = messageId();
-      this.messages.push({ id: assistantId, role: "assistant", content: "正在检索知识库…", pending: true });
-      this.loading.knowledgeQuery = true;
-      let answer = "";
-      let receivedDelta = false;
-      try {
-        const form = new FormData();
-        form.append("message", question);
-        form.append("mode", "knowledge");
-        if (this.activeSessionId) form.append("session_id", String(this.activeSessionId));
-        await streamAgentCheck(form, (event) => {
-          if (event.type === "error") throw new Error(String(event.data.content || "知识库查询失败"));
-          if (event.type === "status") this.updateChatMessage(assistantId, { content: String(event.data.content || "正在检索知识库…"), pending: true });
-          if (event.type === "result") {
-            const sessionId = Number(event.data.session_id) || undefined;
-            if (sessionId) this.activeSessionId = sessionId;
-            const knowledge = knowledgeResultFromToolResults(event.data.tool_results);
-            if (knowledge) this.knowledgeResult = knowledge;
-          }
-          if (event.type === "delta") {
-            const delta = String(event.data.content || "");
-            answer = receivedDelta ? answer + delta : delta;
-            receivedDelta = true;
-            this.updateChatMessage(assistantId, { content: answer, pending: true });
-          }
-          if (event.type === "done") this.updateChatMessage(assistantId, { content: answer, pending: false });
-        }, signal);
-        assertNotAborted(signal);
-        await this.fetchSessions();
-        this.resultPanelOpen = true;
-      } catch (error) {
-        if (isAbortError(error)) return this.updateChatMessage(assistantId, { content: stoppedAnswer(answer), pending: false });
-        const text = errorMessage(error);
-        this.updateChatMessage(assistantId, { content: `请求未完成：${text}`, pending: false });
-        this.showMessage("error", text);
-      } finally {
-        this.loading.knowledgeQuery = false;
       }
     },
     async fetchIssues(scope, documentId = Number(this.documentId)) {
@@ -430,14 +315,12 @@ export default {
       this.loading.sessionDetail = true;
       try {
         const data = await request(`/agent/sessions/${sessionId}`);
-        const run = data.last_run_id ? await request(`/agent/runs/${data.last_run_id}`) : null;
-        const clauseMode = Boolean(data.active_clause_extraction_run_id);
+        const task = data.last_task_id ? await request(`/agent/tasks/${data.last_task_id}`) : null;
+        const taskResults = toolResultsFromTask(task);
         this.activeSessionId = data.session_id;
-        this.mode = clauseMode ? "clause_extract" : data.active_document_id ? "check" : "knowledge";
         this.taskTitle = data.title;
         this.documentId = data.active_document_id || "";
         this.wordFile = null;
-        this.pdfFile = null;
         this.wordUpload = data.active_document_id && data.document_file_name ? {
           document_id: data.active_document_id,
           file_name: data.document_file_name,
@@ -447,11 +330,10 @@ export default {
           chunk_count: 0,
         } : null;
         this.messages = data.messages.map((item, index) => ({ id: `${data.session_id}-${index}-${item.created_at}`, role: item.role, content: item.content }));
-        this.agentResult = run ? { session_id: data.session_id, run_id: run.run_id, tool_plan: run.tool_plan, tool_results: run.tool_results, answer: run.answer } : null;
-        this.knowledgeResult = run ? knowledgeResultFromToolResults(run.tool_results) : null;
-        this.editResult = run ? editResultFromToolResults(run.tool_results) : null;
-        this.clauseExtractionResult = run ? clauseExtractionResultFromToolResults(run.tool_results) : null;
-        if (data.active_document_id && !clauseMode) {
+        this.agentTask = task;
+        this.agentResult = task ? { session_id: data.session_id, task_id: task.task_id, status: task.status, tool_results: taskResults, answer: task.final_output.answer } : null;
+        this.editResult = editResultFromToolResults(taskResults);
+        if (data.active_document_id) {
           await Promise.all([
             this.fetchIssues("basis_excel", data.active_document_id),
             this.fetchIssues("body_basis", data.active_document_id),
@@ -476,7 +358,7 @@ export default {
       try {
         await request(`/agent/sessions/${target.session_id}`, { method: "DELETE" });
         this.sessions = this.sessions.filter((item) => item.session_id !== target.session_id);
-        if (this.activeSessionId === target.session_id) this.startNewChat("check");
+        if (this.activeSessionId === target.session_id) this.startNewChat();
         this.sessionToDelete = null;
         this.showMessage("success", "对话已删除");
       } catch (error) {
@@ -509,14 +391,31 @@ function resultFromToolResults(value, names) {
   return item ? item.result : null;
 }
 
-const knowledgeResultFromToolResults = (value) => resultFromToolResults(value, ["knowledge_query_tool"]);
 const editResultFromToolResults = (value) => resultFromToolResults(value, ["word_edit_result", "fix_consistency_issues_tool"]);
-const clauseExtractionResultFromToolResults = (value) => resultFromToolResults(value, ["clause_extraction_result"]);
 
-function defaultAttachmentPrompt(mode, hasWord, hasClauseDocument) {
-  if (mode === "check" && hasWord) return "请全面检查这个文档有没有问题";
-  if (mode === "clause_extract" && hasClauseDocument) return "请自动识别并提取这份 PDF 中的全部强制性条文";
-  return "";
+function agentStreamResult(data, sessionId) {
+  return {
+    session_id: sessionId,
+    task_id: Number(data.task_id) || undefined,
+    episode_id: Number(data.episode_id) || undefined,
+    attempt_no: Number(data.attempt_no) || 1,
+    status: data.status,
+    evaluation: data.evaluation,
+    run_id: Number(data.run_id) || undefined,
+    tool_plan: data.tool_plan,
+    tool_results: data.tool_results,
+  };
+}
+
+function toolResultsFromTask(task) {
+  if (!task || !task.final_output) return [];
+  if (task.task_type === "document_check") return task.final_output.tool_results || [];
+  if (task.task_type === "word_edit") return [{ tool: "word_edit_result", result: task.final_output }];
+  return [];
+}
+
+function defaultAttachmentPrompt(hasWord) {
+  return hasWord ? "请全面检查这个文档有没有问题" : "";
 }
 
 function assertNotAborted(signal) {
@@ -532,7 +431,7 @@ function stoppedAnswer(answer) {
 }
 
 function shortTitle(value) {
-  const clean = value.replace(/\.(docx|pdf)$/i, "").trim();
+  const clean = value.replace(/\.docx$/i, "").trim();
   return clean.length > 30 ? `${clean.slice(0, 30)}…` : clean;
 }
 

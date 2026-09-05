@@ -12,7 +12,7 @@ from app.services.word_editor import apply_word_changes, resolve_word_document_p
 
 EDITABLE_SCOPES = ("basis_excel", "body_basis")
 EDITABLE_SEVERITIES = ("warning", "high")
-TERMINAL_STATUSES = ("completed", "manual_review", "partial", "failed")
+TERMINAL_STATUSES = ("completed", "manual_review", "failed")
 
 
 def start_word_edit_run(
@@ -20,6 +20,8 @@ def start_word_edit_run(
     document_id: int,
     owner_user_id: int,
     session_id: int | None = None,
+    task_id: int | None = None,
+    episode_id: int | None = None,
 ) -> dict[str, object]:
     """Create the single durable memory record used by one Word-edit Agent loop."""
     with SessionLocal() as session:
@@ -32,11 +34,12 @@ def start_word_edit_run(
         edit_run = WordEditRun(
             owner_user_id=owner_user_id,
             session_id=session_id,
+            task_id=task_id,
+            episode_id=episode_id,
             source_document_id=document.id,
             source_check_run_id=latest_check_run_id(session, document.id, session_id, owner_user_id),
             status="planning",
             changes=[],
-            decision_trace=[],
         )
         session.add(edit_run)
         session.flush()
@@ -71,6 +74,8 @@ def inspect_consistency_issues(*, edit_run_id: int, owner_user_id: int) -> dict[
         inspection_run = CheckRun(
             owner_user_id=owner_user_id,
             session_id=edit_run.session_id,
+            task_id=edit_run.task_id,
+            episode_id=edit_run.episode_id,
             document_id=document_id,
             run_type="word_check",
             user_message="Word Agent Loop 初始一致性检查",
@@ -284,6 +289,8 @@ def verify_word_edit(*, edit_run_id: int, owner_user_id: int) -> dict[str, objec
         verification_run = CheckRun(
             owner_user_id=owner_user_id,
             session_id=edit_run.session_id,
+            task_id=edit_run.task_id,
+            episode_id=edit_run.episode_id,
             document_id=output_document.id,
             run_type="word_check",
             user_message="Word Agent Loop 修订后复检",
@@ -367,33 +374,6 @@ def verification_result(
     }
 
 
-def append_word_edit_trace(
-    *,
-    edit_run_id: int,
-    owner_user_id: int,
-    phase: str,
-    actor: str,
-    name: str,
-    output: dict[str, object],
-    summary: str,
-) -> dict[str, object]:
-    """Persist each Agent decision and tool observation immediately."""
-    with SessionLocal() as session:
-        edit_run = get_owned_edit_run(session, edit_run_id, owner_user_id, for_update=True)
-        trace = list(edit_run.decision_trace or [])
-        entry = {
-            "step": len(trace) + 1,
-            "phase": phase,
-            "actor": actor,
-            "name": name,
-            "output": output,
-            "summary": summary,
-        }
-        edit_run.decision_trace = trace + [entry]
-        session.commit()
-        return entry
-
-
 def finalize_word_edit_run(
     *,
     edit_run_id: int,
@@ -443,7 +423,6 @@ def finalize_word_edit_run(
                 if edit_run.verification_run_id:
                     agent_session.last_word_check_run_id = edit_run.verification_run_id
 
-        trace = list(edit_run.decision_trace or [])
         session.commit()
         generated_copy = bool(edit_run.output_document_id and edit_run.output_document_id != edit_run.source_document_id)
         if completed and generated_copy:
@@ -474,9 +453,6 @@ def finalize_word_edit_run(
             "failed_count": count_change_status(changes, "failed"),
             "remaining_issue_count": len(remaining_issues),
             "remaining_issues": remaining_issues[:50],
-            "llm_decision_count": sum(1 for item in trace if item.get("actor") == "llm"),
-            "tool_call_count": sum(1 for item in trace if item.get("actor") == "tool"),
-            "agent_trace": trace,
             "changes": changes,
             "passes": summarize_cycles(changes),
             "message": message,
@@ -768,7 +744,6 @@ def word_edit_state_dict(edit_run: WordEditRun, document: WordDocument) -> dict[
         "applied_count": count_change_status(changes, "applied"),
         "failed_count": count_change_status(changes, "failed"),
         "changes": changes,
-        "decision_trace": list(edit_run.decision_trace or []),
         "error_message": edit_run.error_message,
     }
 
