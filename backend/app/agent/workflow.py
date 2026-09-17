@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import date
 
 from app.agent.environments import (
@@ -26,7 +27,10 @@ def route_task(*, message: str, requested_mode: str) -> tuple[str, list[str]]:
         task_type = "word_edit"
     elif mode in ("standard", "document_check", "word_check"):
         task_type = "document_check"
-    elif any(word in message for word in ("抽取强条", "提取强条", "抽取强制性条文", "提取强制性条文")):
+    elif any(
+        word in message
+        for word in ("抽取强条", "提取强条", "抽取强制性条文", "提取强制性条文")
+    ):
         raise ValueError("PDF 强条抽取已移除；可继续检查 Word 中的强条引用")
     elif any(word in message for word in ("修改", "修复", "修订", "生成副本")):
         task_type = "word_edit"
@@ -35,8 +39,12 @@ def route_task(*, message: str, requested_mode: str) -> tuple[str, list[str]]:
 
     checks = ["consistency", "completeness"]
     if task_type == "document_check" and "全面" not in message:
-        completeness = any(word in message for word in ("完整性", "模板", "章节", "标题", "占位符"))
-        consistency = any(word in message for word in ("一致性", "引用", "标准", "规范", "依据"))
+        completeness = any(
+            word in message for word in ("完整性", "模板", "章节", "标题", "占位符")
+        )
+        consistency = any(
+            word in message for word in ("一致性", "引用", "标准", "规范", "依据")
+        )
         if completeness and not consistency:
             checks = ["completeness"]
         elif consistency and not completeness:
@@ -129,7 +137,9 @@ def agent_check(
         result.environment.persist_business_result(
             status=result.evaluation.status,
             answer=answer,
-            error="" if result.evaluation.status == "success" else result.evaluation.summary,
+            error=""
+            if result.evaluation.status == "success"
+            else result.evaluation.summary,
         )
     append_turn(
         owner_user_id=owner_user_id,
@@ -162,21 +172,44 @@ def answer_for_result(*, message: str, result: HarnessResult) -> str:
         return business_message or result.evaluation.summary
     if isinstance(result.environment, WordEditEnvironment):
         return str(result.output.get("message") or result.evaluation.summary)
-    tool_results = list(result.output.get("tool_results") or [])
+    issue_count = int(result.evaluation.evidence.get("issue_count") or 0)
+    scope_counts = dict(result.evaluation.evidence.get("scope_counts") or {})
+    tool_results = [
+        item
+        for item in list(result.output.get("tool_results") or [])
+        if item.get("tool") in ("word_check_tool", "completeness_check_tool")
+    ]
     prompt = f"""
 你是“灵枢·规鉴”的文档检查报告生成器。只能依据工具结果总结，不能编造。
 {USER_REPORT_FORMAT_RULES}
-先给结论，再按一致性与完整性列出高风险、警告和必要明细；没有执行的检查不要声称已检查。
+第一行必须写“本次检查共发现 {issue_count} 个问题。”，不得根据截断的 issues 列表重新计算总数。
+再按一致性与完整性列出高风险、警告和必要明细；没有执行的检查不要声称已检查。
 用户问题：{message}
+确定性数据库统计：总数 {issue_count}，分 scope {json.dumps(scope_counts, ensure_ascii=False)}
 工具结果：{json.dumps(tool_results, ensure_ascii=False, default=str)}
 """
     try:
-        return call_llm(prompt)
+        return ensure_answer_issue_count(call_llm(prompt), issue_count)
     except Exception:
-        return f"文档检查已完成，共发现 {result.environment.issue_count()} 个问题。"
+        return f"本次检查共发现 {issue_count} 个问题。"
 
 
-def legacy_result_fields(result: HarnessResult) -> tuple[int | None, list[dict], int | None]:
+def ensure_answer_issue_count(answer: str, issue_count: int) -> str:
+    """Keep the report headline consistent with the deterministic DB count."""
+    expected = f"本次检查共发现 {issue_count} 个问题。"
+    lines = answer.strip().splitlines()
+    first = next((index for index, line in enumerate(lines) if line.strip()), None)
+    if first is None:
+        return expected
+    if re.search(r"共(?:计|发现|返回|记录)?\s*\d+\s*(?:个|条|处)\s*问题", lines[first]):
+        lines[first] = expected
+        return "\n".join(lines)
+    return f"{expected}\n\n{answer.strip()}"
+
+
+def legacy_result_fields(
+    result: HarnessResult,
+) -> tuple[int | None, list[dict], int | None]:
     env = result.environment
     if isinstance(env, DocumentCheckEnvironment):
         return env.check_run_id, list(env.tool_results), env.document_id

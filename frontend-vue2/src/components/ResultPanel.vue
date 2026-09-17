@@ -25,6 +25,44 @@
     </div>
 
     <div class="result-panel-scroll">
+      <details v-if="agentTask || agentExperiences.length" class="debug-panel">
+        <summary>开发调试（临时）：Task 轨迹与 Experience</summary>
+
+        <section v-if="agentTask" class="debug-section">
+          <h3>当前 Task #{{ agentTask.task_id }} · {{ taskSummary }}</h3>
+          <p class="debug-meta">{{ agentTask.user_message }}</p>
+          <details v-for="episode in agentTask.episodes || []" :key="episode.episode_id" class="debug-episode">
+            <summary>Episode {{ episode.attempt_no }} · {{ statusLabel(episode.status) }} · {{ (episode.steps || []).length }} Step</summary>
+            <p v-if="episode.evaluation" class="debug-meta">Evaluator：{{ formatJson(episode.evaluation) }}</p>
+            <p v-if="episode.reflection" class="debug-meta">Reflection：{{ formatJson(episode.reflection) }}</p>
+            <article v-for="step in episode.steps || []" :key="step.step_id" class="debug-step">
+              <strong>Step {{ step.step_index }} · {{ stepTitle(step) }} · {{ step.status }}</strong>
+              <details>
+                <summary>查看 action / observation / state</summary>
+                <pre>action: {{ formatJson(step.action) }}
+trusted_args: {{ formatJson(step.trusted_args) }}
+observation: {{ formatJson(step.observation) }}
+state_before: {{ formatJson(step.state_before) }}
+state_after: {{ formatJson(step.state_after) }}</pre>
+              </details>
+            </article>
+          </details>
+        </section>
+
+        <section class="debug-section">
+          <h3>当前用户 Experience（{{ agentExperiences.length }} 条）</h3>
+          <p v-if="!agentExperiences.length" class="debug-meta">尚无经验：正常一次成功不会生成 Experience；失败并进入 Reflection 后才可能出现。</p>
+          <details v-for="experience in agentExperiences" :key="experience.experience_id" class="debug-experience">
+            <summary>#{{ experience.experience_id }} · {{ experience.task_type }} · {{ experience.status }} · 使用 {{ experience.use_count }} 次</summary>
+            <p v-if="experience.failure_summary"><b>失败原因：</b>{{ experience.failure_summary }}</p>
+            <p v-if="experience.lesson"><b>经验：</b>{{ experience.lesson }}</p>
+            <p v-if="experience.retry_strategy"><b>重试策略：</b>{{ experience.retry_strategy }}</p>
+            <p v-if="experience.success_summary"><b>后续成功：</b>{{ experience.success_summary }}</p>
+            <p class="debug-meta">failed_episode_id={{ experience.failed_episode_id || "-" }}；successful_episode_id={{ experience.successful_episode_id || "-" }}</p>
+          </details>
+        </section>
+      </details>
+
       <div v-if="editResult" class="edit-result-block">
           <div class="edit-result-card">
             <div>
@@ -67,6 +105,7 @@
           </li>
         </ol>
       </details>
+
     </div>
   </aside>
 </template>
@@ -89,6 +128,7 @@ export default {
     completenessIssues: { type: Object, default: null },
     currentIssues: { type: Object, default: null },
     agentTask: { type: Object, default: null },
+    agentExperiences: { type: Array, default: () => [] },
     editResult: { type: Object, default: null },
   },
   computed: {
@@ -113,7 +153,7 @@ export default {
     },
     trajectorySteps() {
       const episodes = (this.agentTask && this.agentTask.episodes) || [];
-      return episodes.flatMap((episode) => episode.steps || []);
+      return episodes.reduce((steps, episode) => steps.concat(episode.steps || []), []);
     },
     taskSummary() {
       if (!this.agentTask) return "等待 Agent 运行";
@@ -124,6 +164,7 @@ export default {
   methods: {
     issueTypeLabel,
     severityLabel,
+    statusLabel,
     stepTitle(step) {
       if (step.action && step.action.action === "call_tool") return step.action.tool || "调用工具";
       return statusLabel((step.action && step.action.action) || step.status);
@@ -132,6 +173,11 @@ export default {
       if (step.error_message) return step.error_message;
       const reason = step.action && step.action.reason_summary;
       return reason || `耗时 ${step.duration_ms || 0} ms`;
+    },
+    formatJson(value) {
+      if (value === null || value === undefined) return "-";
+      if (typeof value === "string") return value;
+      return JSON.stringify(value, null, 2);
     },
   },
 };

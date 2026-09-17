@@ -1294,6 +1294,76 @@ textarea:focus-visible {
   background: #fff4d8;
 }
 
+.debug-panel {
+  margin: 12px 11px;
+  border: 1px dashed #b9c6d8;
+  border-radius: 8px;
+  background: #f8fbff;
+  padding: 10px;
+}
+
+.debug-panel > summary,
+.debug-episode > summary,
+.debug-experience > summary,
+.debug-step summary {
+  cursor: pointer;
+  color: #315476;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.debug-section {
+  margin-top: 12px;
+}
+
+.debug-section h3 {
+  margin: 0 0 5px;
+  color: #294766;
+  font-size: 11px;
+}
+
+.debug-meta,
+.debug-experience p {
+  margin: 5px 0;
+  color: #52677d;
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.debug-episode,
+.debug-experience,
+.debug-step {
+  display: block;
+  margin-top: 7px;
+  padding: 7px;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.debug-step {
+  border-top: 1px solid #e4ebf3;
+}
+
+.debug-step strong {
+  display: block;
+  color: #34485c;
+  font-size: 10px;
+}
+
+.debug-step pre {
+  overflow-x: auto;
+  margin: 6px 0 0;
+  padding: 7px;
+  border-radius: 5px;
+  background: #152334;
+  color: #dbe9f7;
+  font-size: 9px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .result-toolbar {
   display: block;
   padding: 0 12px 12px;

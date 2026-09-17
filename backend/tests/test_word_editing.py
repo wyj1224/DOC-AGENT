@@ -5,7 +5,7 @@ from pathlib import Path
 
 from docx import Document
 
-from app.services.word_editor import apply_word_changes
+from app.services.word_editor import apply_word_changes, validate_word_change_diff
 from app.services.word_references import extract_references
 from app.word_loader import parse_docx_file
 
@@ -33,15 +33,40 @@ class WordEditingTest(unittest.TestCase):
             result = apply_word_changes(source, output, changes)
 
             self.assertTrue(all(change["status"] == "applied" for change in result))
-            self.assertEqual(source_hash, hashlib.sha256(source.read_bytes()).hexdigest())
-            self.assertEqual(Document(output).paragraphs[1].text, "依据《新标准》GB 100-2026 执行。")
+            self.assertEqual(
+                source_hash, hashlib.sha256(source.read_bytes()).hexdigest()
+            )
+            self.assertEqual(
+                Document(output).paragraphs[1].text, "依据《新标准》GB 100-2026 执行。"
+            )
             self.assertTrue(Document(output).paragraphs[1].runs[0].bold)
 
+            diff = validate_word_change_diff(source, output, changes)
+            self.assertTrue(diff["ok"])
+            self.assertEqual(diff["verified_change_count"], 2)
+            self.assertEqual(diff["changed_locator_count"], 1)
 
-def make_change(locator: dict[str, object], target: str, after: str) -> dict[str, object]:
+            tampered = Document(output)
+            tampered.paragraphs[0].text = "被意外修改的标题"
+            tampered.save(output)
+            unsafe_diff = validate_word_change_diff(source, output, changes)
+            self.assertFalse(unsafe_diff["ok"])
+            self.assertIn("outside_target_change", unsafe_diff["errors"])
+
+
+def make_change(
+    locator: dict[str, object], target: str, after: str
+) -> dict[str, object]:
+    span = dict(locator[target])
     return {
-        "locator": {key: value for key, value in locator.items() if key not in ("standard_no", "standard_name")},
-        "span": dict(locator[target]),
+        "change_id": target,
+        "locator": {
+            key: value
+            for key, value in locator.items()
+            if key not in ("standard_no", "standard_name")
+        },
+        "span": span,
+        "before": span["text"],
         "after": after,
     }
 

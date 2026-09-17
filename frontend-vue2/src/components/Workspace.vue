@@ -37,6 +37,7 @@
       :completeness-issues="completenessIssues"
       :current-issues="currentIssues"
       :agent-task="agentTask"
+      :agent-experiences="agentExperiences"
       :edit-result="editResult"
       @toggle="resultPanelOpen = !resultPanelOpen"
       @scope-change="activeIssueScope = $event"
@@ -99,6 +100,7 @@ export default {
       documentId: "",
       agentResult: null,
       agentTask: null,
+      agentExperiences: [],
       editResult: null,
       basisIssues: null,
       bodyIssues: null,
@@ -106,6 +108,7 @@ export default {
       activeIssueScope: "basis_excel",
       sessions: [],
       activeSessionId: null,
+      sessionLoadVersion: 0,
       sessionToDelete: null,
       deletingSession: false,
     };
@@ -149,6 +152,7 @@ export default {
       this.toastTimer = window.setTimeout(() => { this.toast = null; }, 3200);
     },
     startNewChat() {
+      this.sessionLoadVersion += 1;
       this.stopResponse();
       this.taskTitle = "新对话";
       this.messages = [];
@@ -158,6 +162,7 @@ export default {
       this.documentId = "";
       this.agentResult = null;
       this.agentTask = null;
+      this.agentExperiences = [];
       this.editResult = null;
       this.basisIssues = null;
       this.bodyIssues = null;
@@ -199,6 +204,7 @@ export default {
       if (index >= 0) this.$set(this.messages, index, { ...this.messages[index], ...changes });
     },
     async runDocumentCheck(message, signal) {
+      const loadVersion = ++this.sessionLoadVersion;
       const assistantId = messageId();
       this.messages.push({ id: assistantId, role: "assistant", content: "正在准备文档…", pending: true });
       this.loading.check = true;
@@ -254,8 +260,16 @@ export default {
         this.agentResult = { ...streamResult, answer };
         this.agentTask = streamResult.task_id ? await request(`/agent/tasks/${streamResult.task_id}`) : null;
         const scopes = returnedEditResult ? ["basis_excel", "body_basis"] : scopesForMessage(message);
+        const resultDocumentId = Number(this.agentTask && this.agentTask.input_data && this.agentTask.input_data.document_id)
+          || targetDocumentId;
+        this.documentId = resultDocumentId;
         this.clearInactiveIssues(scopes);
-        await Promise.all([...scopes.map((scope) => this.fetchIssues(scope, targetDocumentId)), this.fetchSessions()]);
+        await Promise.all([
+          this.fetchSessions(),
+          this.fetchAgentExperiences(loadVersion),
+        ]);
+        await this.refreshIssuePanels(resultDocumentId, scopes, loadVersion);
+        if (!this.isCurrentLoad(loadVersion)) return;
         this.resultPanelOpen = true;
         this.showMessage("success", "文档校核完成");
       } catch (error) {
@@ -280,18 +294,30 @@ export default {
         this.loading.uploadWord = false;
       }
     },
-    async fetchIssues(scope, documentId = Number(this.documentId)) {
+    isCurrentLoad(loadVersion) {
+      return loadVersion === this.sessionLoadVersion;
+    },
+    async refreshIssuePanels(documentId, scopes, loadVersion) {
       if (!documentId) return;
       this.loading.issues = true;
       try {
-        const data = await request(`/word/issues?document_id=${documentId}&check_scope=${scope}&issue_limit=0`);
-        if (scope === "basis_excel") this.basisIssues = data;
-        if (scope === "body_basis") this.bodyIssues = data;
-        if (scope === "completeness") this.completenessIssues = data;
+        const results = await Promise.all(scopes.map(async (scope) => ({
+          scope,
+          data: await request(
+            `/word/issues?document_id=${documentId}&check_scope=${scope}&issue_limit=0`,
+            { cache: "no-store" },
+          ),
+        })));
+        if (!this.isCurrentLoad(loadVersion)) return;
+        results.forEach(({ scope, data }) => {
+          if (scope === "basis_excel") this.basisIssues = data;
+          if (scope === "body_basis") this.bodyIssues = data;
+          if (scope === "completeness") this.completenessIssues = data;
+        });
       } catch (error) {
-        this.showMessage("error", errorMessage(error));
+        if (this.isCurrentLoad(loadVersion)) this.showMessage("error", errorMessage(error));
       } finally {
-        this.loading.issues = false;
+        if (this.isCurrentLoad(loadVersion)) this.loading.issues = false;
       }
     },
     clearInactiveIssues(scopes) {
@@ -311,11 +337,23 @@ export default {
         this.loading.sessions = false;
       }
     },
+    async fetchAgentExperiences(loadVersion) {
+      try {
+        const data = await request("/agent/experiences?status=&limit=50");
+        if (!this.isCurrentLoad(loadVersion)) return;
+        this.agentExperiences = data.items || [];
+      } catch (error) {
+        if (this.isCurrentLoad(loadVersion)) this.showMessage("error", errorMessage(error));
+      }
+    },
     async openSession(sessionId) {
+      const loadVersion = ++this.sessionLoadVersion;
       this.loading.sessionDetail = true;
       try {
         const data = await request(`/agent/sessions/${sessionId}`);
+        if (!this.isCurrentLoad(loadVersion)) return;
         const task = data.last_task_id ? await request(`/agent/tasks/${data.last_task_id}`) : null;
+        if (!this.isCurrentLoad(loadVersion)) return;
         const taskResults = toolResultsFromTask(task);
         this.activeSessionId = data.session_id;
         this.taskTitle = data.title;
@@ -334,21 +372,24 @@ export default {
         this.agentResult = task ? { session_id: data.session_id, task_id: task.task_id, status: task.status, tool_results: taskResults, answer: task.final_output.answer } : null;
         this.editResult = editResultFromToolResults(taskResults);
         if (data.active_document_id) {
-          await Promise.all([
-            this.fetchIssues("basis_excel", data.active_document_id),
-            this.fetchIssues("body_basis", data.active_document_id),
-            this.fetchIssues("completeness", data.active_document_id),
-          ]);
+          await this.refreshIssuePanels(
+            data.active_document_id,
+            ["basis_excel", "body_basis", "completeness"],
+            loadVersion,
+          );
         } else {
+          if (!this.isCurrentLoad(loadVersion)) return;
           this.basisIssues = null;
           this.bodyIssues = null;
           this.completenessIssues = null;
         }
+        await this.fetchAgentExperiences(loadVersion);
+        if (!this.isCurrentLoad(loadVersion)) return;
         this.resultPanelOpen = true;
       } catch (error) {
-        this.showMessage("error", errorMessage(error));
+        if (this.isCurrentLoad(loadVersion)) this.showMessage("error", errorMessage(error));
       } finally {
-        this.loading.sessionDetail = false;
+        if (this.isCurrentLoad(loadVersion)) this.loading.sessionDetail = false;
       }
     },
     async deleteSession() {
