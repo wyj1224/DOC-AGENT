@@ -137,7 +137,7 @@ import {
   Upload,
 } from "lucide-vue";
 
-import { errorMessage, request } from "../lib/api";
+import { adminRequest, errorMessage, request } from "../lib/api";
 
 const titles = {
   excel: ["强条标准库", "查看强制性条文与标准替代关系，通过 Excel 批量更新。"],
@@ -235,7 +235,7 @@ export default {
         form.append("file", this.excelFile);
         form.append("sheet", "强条");
         form.append("replace", String(this.excelReplace));
-        this.excelResult = await request("/excel/ingest", { method: "POST", body: form });
+        this.excelResult = await adminRequest("/excel/ingest", { method: "POST", body: form });
         this.excelImportedAt = formatDateTime(new Date());
         this.excelFile = null;
         await this.fetchLibraries();
@@ -252,7 +252,7 @@ export default {
       try {
         const form = new FormData();
         this.templateFiles.forEach((file) => form.append("files", file));
-        const data = await request("/templates/upload", { method: "POST", body: form });
+        const data = await adminRequest("/templates/upload", { method: "POST", body: form });
         this.templateFiles = [];
         await this.fetchTemplates();
         this.showMessage("success", `已上传 ${data.count || 1} 个 Word 模板`);
@@ -288,7 +288,7 @@ export default {
     async deleteTemplate(template) {
       if (!window.confirm(`确定删除模板“${template.file_name}”吗？`)) return;
       try {
-        await request(`/templates/${template.template_id}`, { method: "DELETE" });
+        await adminRequest(`/templates/${template.template_id}`, { method: "DELETE" });
         if (this.expandedTemplateId === template.template_id) this.expandedTemplateId = null;
         await this.fetchTemplates();
         this.showMessage("success", "模板已删除");

@@ -18,6 +18,7 @@ class Settings:
     visitor_cookie_secret: str
     visitor_cookie_days: int
     visitor_cookie_secure: bool
+    admin_token: str
 
 
 def get_settings() -> Settings:
@@ -33,4 +34,5 @@ def get_settings() -> Settings:
         visitor_cookie_days=int(os.getenv("VISITOR_COOKIE_DAYS", "90")),
         visitor_cookie_secure=os.getenv("VISITOR_COOKIE_SECURE", "false").lower()
         in {"1", "true", "yes"},
+        admin_token=os.getenv("ADMIN_TOKEN", ""),
     )

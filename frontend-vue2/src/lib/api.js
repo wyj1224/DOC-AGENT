@@ -11,6 +11,48 @@ export async function request(path, options = {}) {
   return response.json();
 }
 
+const ADMIN_TOKEN_KEY = "doc_agent_admin_token";
+
+// Requests that change shared data need the admin token; ask once and remember it in this browser.
+export async function adminRequest(path, options = {}) {
+  let token = readAdminToken();
+  if (!token) {
+    token = (window.prompt("请输入管理员口令") || "").trim();
+    if (!token) throw new Error("需要管理员口令");
+  }
+  const headers = new Headers(options.headers);
+  headers.set("X-Admin-Token", token);
+  const response = await fetch(`${API_BASE}${path}`, {
+    credentials: "include",
+    ...options,
+    headers,
+  });
+  if (response.status === 401) {
+    writeAdminToken("");
+    throw new Error(await responseError(response));
+  }
+  if (!response.ok) throw new Error(await responseError(response));
+  writeAdminToken(token);
+  return response.json();
+}
+
+function readAdminToken() {
+  try {
+    return window.localStorage.getItem(ADMIN_TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function writeAdminToken(token) {
+  try {
+    if (token) window.localStorage.setItem(ADMIN_TOKEN_KEY, token);
+    else window.localStorage.removeItem(ADMIN_TOKEN_KEY);
+  } catch {
+    // Storage may be unavailable; the user is simply asked again next time.
+  }
+}
+
 export async function streamAgentCheck(form, onEvent, signal) {
   const response = await fetch(`${API_BASE}/agent/check/stream`, {
     method: "POST",

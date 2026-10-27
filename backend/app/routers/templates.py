@@ -1,8 +1,9 @@
 from pathlib import Path
 import shutil
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
+from app.admin import require_admin
 from app.config import BACKEND_ROOT
 from app.db.database import SessionLocal
 from app.db.models import WordTemplate, WordTemplateHeading, WordTemplateKeySection
@@ -13,7 +14,7 @@ router = APIRouter(prefix="/templates", tags=["Word 模板"])
 UPLOAD_ROOT = BACKEND_ROOT / "data" / "uploads"
 
 
-@router.post("/upload")
+@router.post("/upload", dependencies=[Depends(require_admin)])
 def upload_template(
     files: list[UploadFile] | None = File(None),
     file: UploadFile | None = File(None),
@@ -68,7 +69,7 @@ def get_template(template_id: int):
         }
 
 
-@router.delete("/{template_id}")
+@router.delete("/{template_id}", dependencies=[Depends(require_admin)])
 def delete_template(template_id: int):
     with SessionLocal() as session:
         template = session.get(WordTemplate, template_id)

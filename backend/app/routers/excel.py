@@ -1,8 +1,9 @@
 from pathlib import Path
 import shutil
 
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 
+from app.admin import require_admin
 from app.config import BACKEND_ROOT
 from app.db.database import SessionLocal
 from app.db.models import MandatoryClause, StandardValidityRecord
@@ -13,7 +14,7 @@ router = APIRouter(prefix="/excel", tags=["Excel 标准库"])
 UPLOAD_ROOT = BACKEND_ROOT / "data" / "uploads"
 
 
-@router.post("/ingest")
+@router.post("/ingest", dependencies=[Depends(require_admin)])
 def ingest_excel(
     file: UploadFile = File(...),
     sheet: str = Form("强条"),
