@@ -1,9 +1,19 @@
+from functools import lru_cache
+import os
+import threading
+
 from openai import OpenAI
 
 from app.config import get_settings
 
 
 LLM_TIMEOUT_SECONDS = 60.0
+# Upper bound on in-flight LLM requests per process, shared by every worker slot,
+# so a burst of tasks queues here instead of tripping the provider's rate limit.
+LLM_MAX_CONCURRENCY = int(os.getenv("LLM_MAX_CONCURRENCY", "4"))
+# How long a call may wait for a free slot before failing loudly.
+LLM_SLOT_TIMEOUT_SECONDS = 120.0
+_llm_slots = threading.BoundedSemaphore(LLM_MAX_CONCURRENCY)
 LLM_MAX_TOKENS = 4096
 LLM_REPORT_MAX_TOKENS = 8192
 
@@ -28,22 +38,35 @@ def call_llm_messages(
     settings = get_settings()
     if not settings.llm_api_key:
         raise ValueError("请先在 backend/.env 中配置 DEEPSEEK_API_KEY")
-    client = OpenAI(
-        api_key=settings.llm_api_key,
-        base_url=settings.llm_base_url,
-        timeout=LLM_TIMEOUT_SECONDS,
-        max_retries=0,
-    )
-    response = client.chat.completions.create(
-        model=settings.llm_model,
-        messages=messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
+    client = llm_client(settings.llm_api_key, settings.llm_base_url)
+    if not _llm_slots.acquire(timeout=LLM_SLOT_TIMEOUT_SECONDS):
+        raise TimeoutError(
+            f"等待 LLM 并发槽位超过 {LLM_SLOT_TIMEOUT_SECONDS:.0f} 秒"
+        )
+    try:
+        response = client.chat.completions.create(
+            model=settings.llm_model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+    finally:
+        _llm_slots.release()
     content = response.choices[0].message.content or ""
     if not content.strip():
         raise ValueError("LLM 未返回可用文本")
     return content.strip()
+
+
+@lru_cache(maxsize=4)
+def llm_client(api_key: str, base_url: str) -> OpenAI:
+    """Reuse one client (and its HTTP connection pool) per credential set."""
+    return OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=LLM_TIMEOUT_SECONDS,
+        max_retries=0,
+    )
 
 
 def call_llm(prompt: str, *, temperature: float = 0) -> str:
