@@ -43,11 +43,41 @@ python -m uvicorn app.main:app --reload
 - 健康检查：`GET http://127.0.0.1:8000/health`
 - Swagger：`http://127.0.0.1:8000/docs`
 
+Agent 任务由独立的 worker 进程执行，API 只负责入队。开发时另开一个终端：
+
+```bash
+python -m app.cli.worker --concurrency 2
+```
+
+整套服务（postgres + api + worker + 前端 nginx）用 Docker Compose 启动，打开 `http://localhost:8080`：
+
+```bash
+docker compose --profile app up -d --build
+```
+
+### 任务队列
+
+- 队列就是 `agent_tasks` 表：`queued → running → 终态`，不引入额外中间件。
+- worker 用 `SELECT … FOR UPDATE SKIP LOCKED` 领取任务，多个 worker 进程/线程互不阻塞、不会重复领取。
+- 同一 session 的任务严格串行且按提交顺序执行（共享并追加同一段会话记忆）；不同 session 并行。
+- 运行中的任务每 10 秒写一次 `heartbeat_at`；超过 60 秒无心跳的任务标记为 `stale`，不会自动重跑（LLM 调用和 Word 修改不是幂等的）。
+- 执行中抛异常的任务标记为 `error` 并记录原因，不再停留在 `running`。
+- 每个进程内 LLM 并发上限由 `LLM_MAX_CONCURRENCY`（默认 4）控制，worker 并发槽位由 `WORKER_CONCURRENCY` 控制。
+- 删除 session 时，其排队中的任务标记为 `cancelled`。
+
+队列语义测试需要真实 PostgreSQL（会清空目标库，请用临时库）：
+
+```bash
+TEST_DATABASE_URL=postgresql+psycopg://user:pass@localhost:55432/queue_test python -m pytest tests/test_task_queue.py -q
+```
+
 ## 4. Agent API
 
 ```text
-POST   /agent/check
-POST   /agent/check/stream
+POST   /agent/check                 # 同步执行（保留兼容）
+POST   /agent/check/stream          # 入队后以 SSE 推送排队/运行/结果
+POST   /agent/tasks                 # 入队，立即返回 202 + task_id
+GET    /agent/tasks/{task_id}/events  # 订阅已入队任务的 SSE
 GET    /agent/sessions
 GET    /agent/sessions/{session_id}
 DELETE /agent/sessions/{session_id}

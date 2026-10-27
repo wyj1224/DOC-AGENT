@@ -1,3 +1,6 @@
+# Local development: `docker compose up -d postgres` starts only the database.
+# Full stack:        `docker compose --profile app up -d --build` (api + worker + web + postgres),
+#                    then open http://localhost:8080.
 services:
   postgres:
     image: postgres:16
@@ -16,6 +19,49 @@ services:
       timeout: 5s
       retries: 10
 
+  api:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://clause_agent:clause_agent@postgres:5432/clause_agent
+    volumes:
+      - clause_agent_files:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    profiles: ["app"]
+
+  worker:
+    build: .
+    command: ["python", "-m", "app.cli.worker"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://clause_agent:clause_agent@postgres:5432/clause_agent
+      WORKER_CONCURRENCY: "4"
+    # Uploaded and revised Word files must be visible to both the API and the worker.
+    volumes:
+      - clause_agent_files:/app/data
+    depends_on:
+      api:
+        # The API creates and migrates the schema at startup.
+        condition: service_healthy
+    # Let running tasks finish on `docker compose stop` instead of being killed after 10s.
+    stop_grace_period: 5m
+    profiles: ["app"]
+
+  web:
+    build: ../frontend-vue2
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+    profiles: ["app"]
+
 volumes:
   clause_agent_pgdata:
-
+  clause_agent_files:
