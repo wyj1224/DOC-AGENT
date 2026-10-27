@@ -2,10 +2,11 @@ import asyncio
 from datetime import date
 import json
 
-from fastapi import APIRouter, Depends, Form, HTTPException
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from app.agent.workflow import agent_check
+from app.agent.task_queue import QUEUED, RUNNING, queue_position
+from app.agent.workflow import agent_check, enqueue_agent_check
 from app.db.database import SessionLocal
 from app.db.models import (
     AgentEpisode,
@@ -45,8 +46,11 @@ def check_with_agent(
     )
 
 
-@router.post("/check/stream")
-async def check_with_agent_stream(
+TASK_POLL_SECONDS = 0.5
+
+
+@router.post("/tasks", status_code=202)
+def submit_agent_task(
     message: str = Form("请全面检查这个文档有没有问题"),
     document_id: int | None = Form(None),
     session_id: int | None = Form(None),
@@ -54,47 +58,119 @@ async def check_with_agent_stream(
     mode: str = Form(""),
     user: User = Depends(get_current_visitor),
 ):
+    """Queue a task for the worker and return its id without waiting."""
     parsed_publish_date = date.fromisoformat(publish_date) if publish_date else None
+    try:
+        return enqueue_agent_check(
+            message=message,
+            document_id=document_id,
+            publish_date=parsed_publish_date,
+            owner_user_id=user.id,
+            session_id=session_id,
+            requested_mode=mode,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+
+@router.get("/tasks/{task_id}/events")
+async def stream_agent_task(
+    task_id: int,
+    request: Request,
+    user: User = Depends(get_current_visitor),
+):
+    """SSE view of a queued task; closing it never cancels the task."""
+    load_owned_task_status(task_id, user.id)
+    return task_event_response(task_id, user.id, request)
+
+
+@router.post("/check/stream")
+async def check_with_agent_stream(
+    request: Request,
+    message: str = Form("请全面检查这个文档有没有问题"),
+    document_id: int | None = Form(None),
+    session_id: int | None = Form(None),
+    publish_date: str = Form(""),
+    mode: str = Form(""),
+    user: User = Depends(get_current_visitor),
+):
+    """Queue the task, then stream its progress with the original event format."""
+    parsed_publish_date = date.fromisoformat(publish_date) if publish_date else None
+    try:
+        queued = await asyncio.to_thread(
+            enqueue_agent_check,
+            message=message,
+            document_id=document_id,
+            publish_date=parsed_publish_date,
+            owner_user_id=user.id,
+            session_id=session_id,
+            requested_mode=mode,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return task_event_response(int(queued["task_id"]), user.id, request)
+
+
+def task_event_response(task_id: int, owner_user_id: int, request: Request) -> StreamingResponse:
     async def event_stream():
-        yield sse_event("status", {"content": "正在理解问题并执行所需工具…"})
-        try:
-            result = await asyncio.to_thread(
-                agent_check,
-                message=message,
-                document_id=document_id,
-                publish_date=parsed_publish_date,
-                owner_user_id=user.id,
-                session_id=session_id,
-                requested_mode=mode,
-            )
-            yield sse_event(
-                "result",
-                {
-                    "session_id": result.get("session_id"),
-                    "task_id": result.get("task_id"),
-                    "episode_id": result.get("episode_id"),
-                    "attempt_no": result.get("attempt_no"),
-                    "status": result.get("status"),
-                    "evaluation": result.get("evaluation"),
-                    "run_id": result.get("run_id"),
-                    "tool_plan": result.get("tool_plan"),
-                    "tool_results": result.get("tool_results"),
-                },
-            )
-            answer = str(result.get("answer", ""))
+        last_status = None
+        while True:
+            if await request.is_disconnected():
+                return
+            try:
+                status, error_message, response = await asyncio.to_thread(
+                    load_owned_task_status, task_id, owner_user_id
+                )
+                position = (
+                    await asyncio.to_thread(queue_position, task_id)
+                    if status == QUEUED
+                    else None
+                )
+            except Exception as exc:
+                yield sse_event("error", {"content": str(exc)})
+                return
+            if status in (QUEUED, RUNNING):
+                if (status, position) != last_status:
+                    last_status = (status, position)
+                    yield sse_event("status", task_status_event(task_id, status, position))
+                await asyncio.sleep(TASK_POLL_SECONDS)
+                continue
+            if not response:
+                yield sse_event("error", {"content": error_message or f"任务结束：{status}"})
+                return
+            yield sse_event("result", {k: v for k, v in response.items() if k != "answer"})
+            answer = str(response.get("answer", ""))
             for start in range(0, len(answer), 24):
                 yield sse_event("delta", {"content": answer[start : start + 24]})
                 await asyncio.sleep(0.01)
             yield sse_event("done", {})
-        except Exception as exc:
-            yield sse_event("error", {"content": str(exc)})
+            return
 
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+def task_status_event(task_id: int, status: str, position: int | None) -> dict[str, object]:
+    if status == QUEUED:
+        content = f"已进入队列，前面还有 {position} 个任务…" if position else "已进入队列，即将开始…"
+    else:
+        content = "正在理解问题并执行所需工具…"
+    return {"content": content, "task_id": task_id, "status": status, "queue_position": position}
+
+
+def load_owned_task_status(task_id: int, owner_user_id: int) -> tuple[str, str, dict]:
+    with SessionLocal() as session:
+        task = (
+            session.query(AgentTask)
+            .filter(AgentTask.id == task_id, AgentTask.owner_user_id == owner_user_id)
+            .first()
+        )
+        if not task:
+            raise HTTPException(status_code=404, detail="AgentTask 不存在")
+        return task.status, task.error_message, dict(task.response_payload or {})
 
 
 @router.get("/sessions")
@@ -163,6 +239,14 @@ def delete_agent_session(session_id: int, user: User = Depends(get_current_visit
         )
         if not agent_session:
             raise HTTPException(status_code=404, detail="会话不存在")
+        # Queued tasks would lose their conversation; cancel them instead of leaving them orphaned.
+        session.query(AgentTask).filter(
+            AgentTask.session_id == session_id,
+            AgentTask.status == QUEUED,
+        ).update(
+            {"status": "cancelled", "error_message": "会话已删除"},
+            synchronize_session=False,
+        )
         session.delete(agent_session)
         session.commit()
         return {"deleted": True, "session_id": session_id}
@@ -388,6 +472,9 @@ def agent_task_item(task: AgentTask) -> dict[str, object]:
         "final_episode_id": task.final_episode_id,
         "final_output": task.final_output,
         "error_message": task.error_message,
+        "worker_id": task.worker_id,
+        "claimed_at": task.claimed_at,
+        "heartbeat_at": task.heartbeat_at,
         "started_at": task.started_at,
         "finished_at": task.finished_at,
     }
