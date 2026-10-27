@@ -2,18 +2,30 @@ import json
 import re
 from datetime import date
 
+from fastapi.encoders import jsonable_encoder
+
 from app.agent.environments import (
     DocumentCheckEnvironment,
     WordEditEnvironment,
 )
 from app.agent.harness import HarnessResult, run_agent
-from app.agent.runtime_store import create_task, finish_task
+from app.agent.runtime_store import (
+    create_task,
+    fail_task,
+    finish_task,
+    load_task,
+)
 from app.llm import USER_REPORT_FORMAT_RULES, call_llm
-from app.services.session_memory import append_turn, prepare_session
+from app.services.session_memory import (
+    append_turn,
+    load_session_context,
+    prepare_session,
+)
 
 
 DEFAULT_MAX_EDIT_CYCLES = 3
 WORD_EDIT_RESULT_TOOL = "word_edit_result"
+QUEUED_STATUS = "queued"
 
 
 def route_task(*, message: str, requested_mode: str) -> tuple[str, list[str]]:
@@ -61,6 +73,55 @@ def agent_check(
     requested_mode: str = "",
     max_edit_cycles: int = DEFAULT_MAX_EDIT_CYCLES,
 ) -> dict[str, object]:
+    """Create a task and run it inline in the calling thread."""
+    task_id, _ = create_agent_task(
+        message=message,
+        document_id=document_id,
+        publish_date=publish_date,
+        owner_user_id=owner_user_id,
+        session_id=session_id,
+        requested_mode=requested_mode,
+        max_edit_cycles=max_edit_cycles,
+        status="running",
+    )
+    return run_agent_task(task_id)
+
+
+def enqueue_agent_check(
+    message: str,
+    document_id: int | None = None,
+    publish_date: date | None = None,
+    owner_user_id: int | None = None,
+    session_id: int | None = None,
+    requested_mode: str = "",
+    max_edit_cycles: int = DEFAULT_MAX_EDIT_CYCLES,
+) -> dict[str, object]:
+    """Create a queued task for a worker and return immediately."""
+    task_id, task_session_id = create_agent_task(
+        message=message,
+        document_id=document_id,
+        publish_date=publish_date,
+        owner_user_id=owner_user_id,
+        session_id=session_id,
+        requested_mode=requested_mode,
+        max_edit_cycles=max_edit_cycles,
+        status=QUEUED_STATUS,
+    )
+    return {"task_id": task_id, "session_id": task_session_id, "status": QUEUED_STATUS}
+
+
+def create_agent_task(
+    *,
+    message: str,
+    document_id: int | None,
+    publish_date: date | None,
+    owner_user_id: int | None,
+    session_id: int | None,
+    requested_mode: str,
+    max_edit_cycles: int,
+    status: str,
+) -> tuple[int, int]:
+    """Validate the request and persist everything a worker needs to run it."""
     if owner_user_id is None:
         raise ValueError("缺少当前访客")
     session_context = prepare_session(
@@ -81,6 +142,7 @@ def agent_check(
         "document_id": document_id,
         "publish_date": publish_date.isoformat() if publish_date else None,
         "checks": checks,
+        "max_edit_cycles": max_edit_cycles,
     }
     task_id = create_task(
         owner_user_id=owner_user_id,
@@ -88,7 +150,37 @@ def agent_check(
         task_type=task_type,
         user_message=message,
         input_data=input_data,
+        status=status,
     )
+    return task_id, session_context.session_id
+
+
+def run_agent_task(task_id: int) -> dict[str, object]:
+    """Execute a persisted task; any crash is recorded on the task before re-raising."""
+    try:
+        return _run_agent_task(task_id)
+    except Exception as exc:
+        fail_task(task_id=task_id, error_message=f"{type(exc).__name__}: {exc}")
+        raise
+
+
+def _run_agent_task(task_id: int) -> dict[str, object]:
+    task = load_task(task_id)
+    owner_user_id = task.owner_user_id
+    message = task.user_message
+    task_type = task.task_type
+    input_data = dict(task.input_data or {})
+    document_id = input_data["document_id"]
+    checks = list(input_data.get("checks") or [])
+    publish_date = (
+        date.fromisoformat(input_data["publish_date"])
+        if input_data.get("publish_date")
+        else None
+    )
+    max_edit_cycles = int(input_data.get("max_edit_cycles") or DEFAULT_MAX_EDIT_CYCLES)
+    if task.session_id is None:
+        raise ValueError("任务所属会话已被删除")
+    session_context = load_session_context(owner_user_id, task.session_id)
 
     def environment_factory(episode_id: int):
         common = {
@@ -125,12 +217,6 @@ def agent_check(
         result=result,
     )
     output = {**result.output, "answer": answer}
-    finish_task(
-        task_id=task_id,
-        episode_id=result.episode_id,
-        evaluation=result.evaluation,
-        output=output,
-    )
 
     run_id, tool_results, final_document_id = legacy_result_fields(result)
     if isinstance(result.environment, DocumentCheckEnvironment):
@@ -152,7 +238,7 @@ def agent_check(
         task_id=task_id,
         episode_id=result.episode_id,
     )
-    return {
+    response = {
         "session_id": session_context.session_id,
         "task_id": task_id,
         "episode_id": result.episode_id,
@@ -164,6 +250,15 @@ def agent_check(
         "tool_results": tool_results,
         "answer": answer,
     }
+    # Terminal status is written last so pollers never see a finished task without its response.
+    finish_task(
+        task_id=task_id,
+        episode_id=result.episode_id,
+        evaluation=result.evaluation,
+        output=output,
+        response=jsonable_encoder(response),
+    )
+    return response
 
 
 def answer_for_result(*, message: str, result: HarnessResult) -> str:

@@ -54,6 +54,26 @@ def prepare_session(
         )
 
 
+def load_session_context(owner_user_id: int, session_id: int) -> SessionContext:
+    """Read the conversation as it is when a queued task actually starts."""
+    with SessionLocal() as database:
+        agent_session = (
+            database.query(AgentSession)
+            .filter(
+                AgentSession.id == session_id,
+                AgentSession.owner_user_id == owner_user_id,
+            )
+            .first()
+        )
+        if not agent_session:
+            raise ValueError("会话不存在")
+        return SessionContext(
+            session_id=agent_session.id,
+            document_id=agent_session.active_document_id,
+            conversation=conversation_text(agent_session),
+        )
+
+
 def append_turn(
     owner_user_id: int,
     session_id: int,

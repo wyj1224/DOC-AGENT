@@ -323,12 +323,19 @@ class AgentTask(Base, TimestampMixin):
     final_episode_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     final_output: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     error_message: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    # Queue bookkeeping: a worker claims a queued task and refreshes heartbeat_at while running.
+    worker_id: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The API response of a finished task, so clients can fetch it after the worker is done.
+    response_payload: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         Index("ix_agent_tasks_owner_type", "owner_user_id", "task_type"),
         Index("ix_agent_tasks_session_created", "session_id", "created_at"),
+        Index("ix_agent_tasks_status_id", "status", "id"),
     )
 
 

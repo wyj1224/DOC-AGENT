@@ -10,7 +10,13 @@ def utcnow() -> datetime:
 
 
 def create_task(
-    *, owner_user_id: int, session_id: int | None, task_type: str, user_message: str, input_data: dict
+    *,
+    owner_user_id: int,
+    session_id: int | None,
+    task_type: str,
+    user_message: str,
+    input_data: dict,
+    status: str = "running",
 ) -> int:
     with SessionLocal() as session:
         row = AgentTask(
@@ -19,6 +25,7 @@ def create_task(
             task_type=task_type,
             user_message=user_message,
             input_data=input_data,
+            status=status,
         )
         session.add(row)
         session.commit()
@@ -93,7 +100,14 @@ def finish_episode(
         session.commit()
 
 
-def finish_task(*, task_id: int, episode_id: int, evaluation: EvaluationResult, output: dict) -> None:
+def finish_task(
+    *,
+    task_id: int,
+    episode_id: int,
+    evaluation: EvaluationResult,
+    output: dict,
+    response: dict | None = None,
+) -> None:
     with SessionLocal() as session:
         row = session.get(AgentTask, task_id)
         if not row:
@@ -101,9 +115,31 @@ def finish_task(*, task_id: int, episode_id: int, evaluation: EvaluationResult, 
         row.status = evaluation.status
         row.final_episode_id = episode_id
         row.final_output = output
+        row.response_payload = response or {}
         row.error_message = "" if evaluation.status == "success" else evaluation.summary
         row.finished_at = utcnow()
         session.commit()
+
+
+def fail_task(*, task_id: int, error_message: str) -> None:
+    """Record an unexpected crash so the task never stays 'running' forever."""
+    with SessionLocal() as session:
+        row = session.get(AgentTask, task_id)
+        if not row:
+            raise ValueError("AgentTask 不存在")
+        row.status = "error"
+        row.error_message = error_message
+        row.finished_at = utcnow()
+        session.commit()
+
+
+def load_task(task_id: int) -> AgentTask:
+    with SessionLocal() as session:
+        row = session.get(AgentTask, task_id)
+        if not row:
+            raise ValueError("AgentTask 不存在")
+        session.expunge(row)
+        return row
 
 
 def load_episode_steps(episode_id: int) -> list[dict]:
