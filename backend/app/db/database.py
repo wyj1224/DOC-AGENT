@@ -15,8 +15,10 @@ def init_db() -> None:
     from app.db.models import Base
 
     engine = get_engine()
-    Base.metadata.create_all(bind=engine)
     with engine.begin() as connection:
+        # Several API processes start at once; let one run the schema DDL at a time.
+        connection.execute(text("SELECT pg_advisory_xact_lock(hashtext('init_db'))"))
+        Base.metadata.create_all(bind=connection)
         connection.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT NOT NULL DEFAULT ''"))
         connection.execute(text("ALTER TABLE word_documents ADD COLUMN IF NOT EXISTS file_path VARCHAR(1024) NOT NULL DEFAULT ''"))
         connection.execute(text("ALTER TABLE word_documents ADD COLUMN IF NOT EXISTS edit_run_id INTEGER"))

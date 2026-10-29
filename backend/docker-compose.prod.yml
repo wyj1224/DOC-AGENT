@@ -14,6 +14,8 @@ services:
       ADMIN_TOKEN: ${ADMIN_TOKEN:?set ADMIN_TOKEN in .env}
       VISITOR_COOKIE_SECRET: ${VISITOR_COOKIE_SECRET:?set VISITOR_COOKIE_SECRET in .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # One process per core: Word parsing is CPU-bound and would otherwise share one GIL.
+      WEB_CONCURRENCY: "2"
     restart: unless-stopped
 
   worker:
