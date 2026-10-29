@@ -21,7 +21,14 @@ def parse_word_tool(
     owner_user_id: int | None = None,
     edit_run_id: int | None = None,
     edit_cycle: int | None = None,
+    file_name: str | None = None,
 ) -> dict[str, object]:
+    """Parse a Word file into references and sections.
+
+    ``file_name`` is the name shown to users; it defaults to the file's own name.
+    Parsing is CPU-bound and takes seconds on large documents, so it runs between
+    two short transactions instead of holding a pooled connection throughout.
+    """
     if document_id:
         return get_document_parse_result(document_id, owner_user_id=owner_user_id)
 
@@ -31,9 +38,11 @@ def parse_word_tool(
         raise ValueError("edit_run_id 和 edit_cycle 必须同时提供")
 
     source_path = Path(file_path)
+    display_name = file_name or source_path.name
     upload_dir = UPLOAD_ROOT / "word"
     upload_dir.mkdir(parents=True, exist_ok=True)
 
+    # 1. Claim the document row.
     with SessionLocal() as session:
         document = None
         if edit_run_id is not None:
@@ -59,67 +68,74 @@ def parse_word_tool(
         if document is None:
             document = WordDocument(
                 owner_user_id=owner_user_id,
-                file_name=source_path.name,
+                file_name=display_name,
                 parse_status="parsing",
                 edit_run_id=edit_run_id,
                 edit_cycle=edit_cycle,
             )
             session.add(document)
-            session.commit()
-            session.refresh(document)
         else:
-            document.file_name = source_path.name
+            document.file_name = display_name
             document.parse_status = "parsing"
             session.query(WordReference).filter(WordReference.document_id == document.id).delete()
             session.query(WordSection).filter(WordSection.document_id == document.id).delete()
-            session.commit()
+        session.flush()
+        new_document_id = document.id
+        saved_path = upload_dir / f"{new_document_id}_{display_name}"
+        document.file_path = str(saved_path)
+        session.commit()
 
-        try:
-            saved_path = upload_dir / f"{document.id}_{source_path.name}"
-            if source_path.resolve() != saved_path.resolve():
-                shutil.copyfile(source_path, saved_path)
-            document.file_path = str(saved_path)
-            chunks = parse_docx_file(str(saved_path))
-            references = extract_references(chunks)
-            sections = extract_word_sections(str(saved_path))
-        except Exception:
-            document.parse_status = "failed"
+    # 2. Parse without a database connection.
+    try:
+        if source_path.resolve() != saved_path.resolve():
+            shutil.copyfile(source_path, saved_path)
+        chunks = parse_docx_file(str(saved_path))
+        references = extract_references(chunks)
+        sections = extract_word_sections(str(saved_path))
+    except Exception:
+        with SessionLocal() as session:
+            failed = session.get(WordDocument, new_document_id)
+            failed.parse_status = "failed"
             session.commit()
-            raise
+        raise
+
+    # 3. Store the results.
+    with SessionLocal() as session:
+        document = session.get(WordDocument, new_document_id)
         for item in references:
-            reference = WordReference(
-                owner_user_id=owner_user_id,
-                document_id=document.id,
-                file_name=document.file_name,
-                section_title=str(item["section_title"]),
-                paragraph_index=int(item["paragraph_index"]),
-                standard_no=str(item["standard_no"]),
-                standard_name=str(item["standard_name"]),
-                clause_no=str(item["clause_no"]),
-                quoted_text=str(item["quoted_text"]),
-                context=str(item["context"]),
-                locator=dict(item.get("locator") or {}),
+            session.add(
+                WordReference(
+                    owner_user_id=owner_user_id,
+                    document_id=document.id,
+                    file_name=document.file_name,
+                    section_title=str(item["section_title"]),
+                    paragraph_index=int(item["paragraph_index"]),
+                    standard_no=str(item["standard_no"]),
+                    standard_name=str(item["standard_name"]),
+                    clause_no=str(item["clause_no"]),
+                    quoted_text=str(item["quoted_text"]),
+                    context=str(item["context"]),
+                    locator=dict(item.get("locator") or {}),
+                )
             )
-            session.add(reference)
-
         for item in sections:
-            section = WordSection(
-                owner_user_id=owner_user_id,
-                document_id=document.id,
-                file_name=document.file_name,
-                section_index=int(item["section_index"]),
-                paragraph_start=int(item["paragraph_start"]),
-                paragraph_end=int(item["paragraph_end"]),
-                level=int(item["level"]),
-                heading_no=str(item["heading_no"]),
-                title=str(item["title"]),
-                full_title=str(item["full_title"]),
-                section_path=str(item["section_path"]),
-                body_text=str(item["body_text"]),
-                body_length=int(item["body_length"]),
+            session.add(
+                WordSection(
+                    owner_user_id=owner_user_id,
+                    document_id=document.id,
+                    file_name=document.file_name,
+                    section_index=int(item["section_index"]),
+                    paragraph_start=int(item["paragraph_start"]),
+                    paragraph_end=int(item["paragraph_end"]),
+                    level=int(item["level"]),
+                    heading_no=str(item["heading_no"]),
+                    title=str(item["title"]),
+                    full_title=str(item["full_title"]),
+                    section_path=str(item["section_path"]),
+                    body_text=str(item["body_text"]),
+                    body_length=int(item["body_length"]),
+                )
             )
-            session.add(section)
-
         document.parse_status = "parsed"
         session.flush()
         result = parse_result_dict(document, saved_path, len(chunks), len(references), len(sections))
