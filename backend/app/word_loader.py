@@ -58,13 +58,14 @@ def append_table_chunks(
     table_index: int,
     section_stack: list[str],
 ) -> None:
-    seen_cells: set[int] = set()
+    # Merged cells repeat the same <w:tc>. Keep the elements themselves: id() of a
+    # freed lxml proxy can be reused by another cell, which randomly dropped cells.
+    seen_cells: set = set()
     for row_index, row in enumerate(table.rows):
         for cell_index, cell in enumerate(row.cells):
-            cell_key = id(cell._tc)
-            if cell_key in seen_cells:
+            if cell._tc in seen_cells:
                 continue
-            seen_cells.add(cell_key)
+            seen_cells.add(cell._tc)
             for paragraph_index, paragraph in enumerate(cell.paragraphs):
                 text = paragraph.text
                 if not text.strip():
