@@ -9,6 +9,7 @@ from app.db.models import WordTemplate, WordTemplateHeading, WordTemplateKeySect
 from app.services.key_section_diff import extract_key_sections
 from app.services.word_sections import parse_heading
 from app.services.word_sections import extract_word_sections
+from app.word_loader import paragraph_style_name
 
 
 TEMPLATE_TYPE_LABELS = {
@@ -108,7 +109,7 @@ def extract_template_headings(file_path: str) -> list[dict[str, object]]:
         if not text:
             continue
 
-        style_name = getattr(getattr(paragraph, "style", None), "name", "") or ""
+        style_name = paragraph_style_name(paragraph)
         if style_name.lower().startswith("toc"):
             continue
 

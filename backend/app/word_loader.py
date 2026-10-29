@@ -1,6 +1,8 @@
 from pathlib import Path
+from weakref import WeakKeyDictionary
 
 from docx import Document
+from docx.enum.style import WD_STYLE_TYPE
 from docx.oxml.table import CT_Tbl
 from docx.oxml.text.paragraph import CT_P
 from docx.table import Table
@@ -42,8 +44,31 @@ def parse_docx_file(file_path: str) -> list[TextChunk]:
     return chunks
 
 
+# python-docx resolves paragraph.style by scanning every style in the document,
+# which made parsing O(paragraphs x styles). Build the id -> name map once per document.
+_style_names: "WeakKeyDictionary[object, dict[str | None, str]]" = WeakKeyDictionary()
+
+
+def paragraph_style_name(paragraph) -> str:
+    """Same result as ``paragraph.style.name``, without the per-call style scan."""
+    part = paragraph.part
+    names = _style_names.get(part)
+    if names is None:
+        styles = part.styles
+        names = {
+            style.style_id: style.name or ""
+            for style in styles
+            if style.type == WD_STYLE_TYPE.PARAGRAPH
+        }
+        default = styles.default(WD_STYLE_TYPE.PARAGRAPH)
+        names[None] = default.name or "" if default is not None else ""
+        _style_names[part] = names
+    # Unknown ids fall back to the default style, like python-docx does.
+    return names.get(paragraph._p.style, names[None])
+
+
 def heading_level(paragraph) -> int:
-    style_name = getattr(getattr(paragraph, "style", None), "name", "") or ""
+    style_name = paragraph_style_name(paragraph)
     for prefix in ("Heading ", "标题 "):
         if style_name.startswith(prefix):
             tail = style_name.removeprefix(prefix).strip()

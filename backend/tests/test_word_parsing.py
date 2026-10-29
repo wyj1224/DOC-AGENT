@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from docx import Document
 
-from app.word_loader import parse_docx_file
+from app.word_loader import paragraph_style_name, parse_docx_file
 
 
 @pytest.fixture
@@ -24,6 +24,15 @@ def sample_docx(tmp_path) -> Path:
     path = tmp_path / "sample.docx"
     document.save(path)
     return path
+
+
+def test_cached_style_name_matches_python_docx(sample_docx):
+    document = Document(sample_docx)
+    names = [paragraph_style_name(p) for p in document.paragraphs]
+    assert names == [p.style.name for p in document.paragraphs]
+    assert "Heading 1" in names and "List Bullet" in names
+    # Unknown style ids fall back to the default paragraph style.
+    assert names[4] == "Normal"
 
 
 def test_merged_cells_are_kept_once_and_deterministically(sample_docx):

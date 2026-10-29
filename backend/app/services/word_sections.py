@@ -6,7 +6,7 @@ from docx.oxml.text.paragraph import CT_P
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 
-from app.word_loader import heading_level, table_to_text
+from app.word_loader import heading_level, paragraph_style_name, table_to_text
 
 
 NUMBERED_HEADING_RE = re.compile(r"^(\d+(?:\.\d+){0,5})[\s　]+(.{1,120})$")
@@ -42,7 +42,7 @@ def extract_word_sections(file_path: str) -> list[dict[str, object]]:
             if not text:
                 continue
 
-            style_name = getattr(getattr(block, "style", None), "name", "") or ""
+            style_name = paragraph_style_name(block)
             if style_name.lower().startswith("toc"):
                 continue
 
