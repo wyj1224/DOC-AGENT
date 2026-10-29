@@ -37,7 +37,11 @@ def upload_word(
     file_path = upload_dir / f"{uuid4().hex}_{Path(file.filename).name}"
     with file_path.open("wb") as out:
         shutil.copyfileobj(file.file, out)
-    return parse_word_tool(file_path=str(file_path), owner_user_id=user.id)
+    return parse_word_tool(
+        file_path=str(file_path),
+        owner_user_id=user.id,
+        file_name=Path(file.filename).name,
+    )
 
 
 @router.post("/check")

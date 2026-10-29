@@ -11,7 +11,7 @@ def main() -> None:
     args = parser.parse_args()
 
     result = ingest_excel_to_postgres(args.xlsx_path, sheet=args.sheet, replace=args.replace)
-    print(f"[OK] inserted {result['mandatory_clause_count']} mandatory clauses")
+    print(f"[OK] inserted {result['clause_chunk_count']} mandatory clauses")
     print(f"[OK] inserted {result['standard_validity_count']} standard validity records")
 
 

@@ -20,4 +20,5 @@ USER appuser
 
 EXPOSE 8000
 # The same image runs the API (default) and the worker (command override in compose).
+# uvicorn takes its process count from WEB_CONCURRENCY (default 1).
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
